@@ -170,7 +170,6 @@ public class OpenWakeWordDetector : IWakeWordDetector
             // Process when we have at least 1280 samples (like Python)
             if (_accumulatedSamples >= ChunkSize)
             {
-                Console.WriteLine($"[OpenWakeWord] Processing batch: {_accumulatedSamples} samples accumulated");
                 ProcessStreamingFeatures();
                 _accumulatedSamples = 0;
             }
@@ -192,12 +191,10 @@ public class OpenWakeWordDetector : IWakeWordDetector
         {
             // Step 1: Compute melspectrogram for ALL accumulated audio
             var melspecFrames = ComputeStreamingMelspectrogram();
-            Console.WriteLine($"[OpenWakeWord] Computed {melspecFrames.Count} melspec frames, buffer now has {_melspecBuffer.Count} frames");
             
             // Step 2: Calculate embeddings for each possible window
             // Python: for i in np.arange(self.accumulated_samples//1280-1, -1, -1)
             int numChunks = _rawAudioBuffer.Count / ChunkSize;
-            Console.WriteLine($"[OpenWakeWord] Processing {numChunks} chunks from raw buffer ({_rawAudioBuffer.Count} samples)");
             
             for (int i = numChunks - 1; i >= 0; i--)
             {
@@ -237,7 +234,6 @@ public class OpenWakeWordDetector : IWakeWordDetector
                     var modelName = kvp.Key;
                     var metadata = kvp.Value;
                     var score = PredictWakeWord(metadata);
-                    Console.WriteLine($"[OpenWakeWord] {modelName} score: {score:F4} (threshold: {metadata.Threshold})");
                     
                     if (score >= metadata.Threshold)
                     {
@@ -249,10 +245,6 @@ public class OpenWakeWordDetector : IWakeWordDetector
                         }
                     }
                 }
-            }
-            else
-            {
-                Console.WriteLine($"[OpenWakeWord] Feature buffer has only {_featureBuffer.Count} frames, need 16 for prediction");
             }
         }
         catch (Exception ex)
@@ -389,8 +381,6 @@ public class OpenWakeWordDetector : IWakeWordDetector
     
     private void OnWakeWordDetected(string modelName, float score)
     {
-        _logger.LogInformation("Wake word detected: {ModelName}! Score: {Score:F4}", modelName, score);
-        
         var args = new WakeWordDetectedEventArgs
         {
             DetectedWord = modelName,

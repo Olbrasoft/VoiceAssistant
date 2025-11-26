@@ -58,8 +58,6 @@ public class AlsaAudioCapture : IAudioCapture
             return Task.CompletedTask;
         }
 
-        Console.WriteLine($"[AlsaAudioCapture] Starting PipeWire audio capture - Device: alsa_input.usb-FuZhou_Kingwayinfo_CO._LTD_TONOR_TC30_Audio_Device_20200707-00.mono-fallback, Rate: {_sampleRate} Hz, Channels: {_channels}");
-
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         // Use pw-record with PipeWire (resamples to 16kHz)
@@ -78,10 +76,7 @@ public class AlsaAudioCapture : IAudioCapture
 
         _arecordProcess.ErrorDataReceived += (sender, e) =>
         {
-            if (!string.IsNullOrEmpty(e.Data))
-            {
-                Console.WriteLine($"[AlsaAudioCapture] pw-record stderr: {e.Data}");
-            }
+            // Suppress pw-record stderr output
         };
 
         _arecordProcess.Start();
@@ -91,8 +86,6 @@ public class AlsaAudioCapture : IAudioCapture
 
         // Start reading audio data in background task
         _captureTask = Task.Run(async () => await CaptureAudioLoop(_cts.Token), _cts.Token);
-
-        Console.WriteLine("[AlsaAudioCapture] PipeWire audio capture started");
 
         return Task.CompletedTask;
     }
@@ -111,23 +104,13 @@ public class AlsaAudioCapture : IAudioCapture
             byte[] buffer = new byte[frameSize];
             var stream = _arecordProcess!.StandardOutput.BaseStream;
 
-            Console.WriteLine($"[AlsaAudioCapture] Starting capture loop, frame size: {frameSize} bytes");
-            int frameCount = 0;
-
             while (_isCapturing && !cancellationToken.IsCancellationRequested)
             {
                 int bytesRead = await stream.ReadAsync(buffer, 0, frameSize, cancellationToken);
 
                 if (bytesRead == 0)
                 {
-                    Console.WriteLine("[AlsaAudioCapture] End of audio stream reached");
                     break; // End of stream
-                }
-
-                frameCount++;
-                if (frameCount % 100 == 0)
-                {
-                    Console.WriteLine($"[AlsaAudioCapture] Processed {frameCount} frames, last read: {bytesRead} bytes");
                 }
 
                 // Convert byte[] to short[] (16-bit PCM samples)
@@ -140,11 +123,11 @@ public class AlsaAudioCapture : IAudioCapture
         }
         catch (OperationCanceledException)
         {
-            Console.WriteLine("[AlsaAudioCapture] Audio capture cancelled");
+            // Normal cancellation
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            Console.WriteLine($"[AlsaAudioCapture] Error in audio capture loop: {ex.Message}");
+            // Audio capture error - silently stop
         }
     }
 
@@ -155,8 +138,6 @@ public class AlsaAudioCapture : IAudioCapture
         {
             return;
         }
-
-        Console.WriteLine("[AlsaAudioCapture] Stopping PipeWire audio capture...");
 
         _isCapturing = false;
         _cts?.Cancel();
@@ -173,8 +154,6 @@ public class AlsaAudioCapture : IAudioCapture
         {
             await _captureTask;
         }
-
-        Console.WriteLine("[AlsaAudioCapture] PipeWire audio capture stopped");
     }
 
     /// <inheritdoc/>

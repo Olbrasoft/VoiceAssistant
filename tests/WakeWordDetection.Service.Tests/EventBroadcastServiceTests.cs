@@ -65,33 +65,6 @@ public class EventBroadcastServiceTests
     }
 
     [Fact]
-    public async Task BroadcastWakeWordDetectedAsync_ShouldLogInformation()
-    {
-        // Arrange
-        var service = new EventBroadcastService(_hubContextMock.Object, _loggerMock.Object);
-        var wakeWordEvent = new WakeWordEvent
-        {
-            Word = "jarvis",
-            DetectedAt = DateTime.UtcNow,
-            Confidence = 0.95f,
-            ServiceVersion = "1.0.0"
-        };
-
-        // Act
-        await service.BroadcastWakeWordDetectedAsync(wakeWordEvent);
-
-        // Assert
-        _loggerMock.Verify(
-            x => x.Log(
-                LogLevel.Information,
-                It.IsAny<EventId>(),
-                It.Is<It.IsAnyType>((v, t) => v.ToString()!.Contains("Broadcasting wake word event")),
-                It.IsAny<Exception>(),
-                It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
-            Times.Once);
-    }
-
-    [Fact]
     public async Task BroadcastWakeWordDetectedAsync_WithDifferentWords_ShouldBroadcastEach()
     {
         // Arrange

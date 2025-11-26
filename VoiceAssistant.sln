@@ -17,6 +17,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WakeWordDetection.Service.T
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Orchestration", "src\Orchestration\Orchestration.csproj", "{8B9B2823-F379-4FB2-BA3D-5524CC555A94}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Orchestration.Tests", "tests\Orchestration.Tests\Orchestration.Tests.csproj", "{A9A12128-87E5-43D6-BFC6-468CB8479ACC}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -87,6 +89,18 @@ Global
 		{8B9B2823-F379-4FB2-BA3D-5524CC555A94}.Release|x64.Build.0 = Release|Any CPU
 		{8B9B2823-F379-4FB2-BA3D-5524CC555A94}.Release|x86.ActiveCfg = Release|Any CPU
 		{8B9B2823-F379-4FB2-BA3D-5524CC555A94}.Release|x86.Build.0 = Release|Any CPU
+		{A9A12128-87E5-43D6-BFC6-468CB8479ACC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A9A12128-87E5-43D6-BFC6-468CB8479ACC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A9A12128-87E5-43D6-BFC6-468CB8479ACC}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{A9A12128-87E5-43D6-BFC6-468CB8479ACC}.Debug|x64.Build.0 = Debug|Any CPU
+		{A9A12128-87E5-43D6-BFC6-468CB8479ACC}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{A9A12128-87E5-43D6-BFC6-468CB8479ACC}.Debug|x86.Build.0 = Debug|Any CPU
+		{A9A12128-87E5-43D6-BFC6-468CB8479ACC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A9A12128-87E5-43D6-BFC6-468CB8479ACC}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A9A12128-87E5-43D6-BFC6-468CB8479ACC}.Release|x64.ActiveCfg = Release|Any CPU
+		{A9A12128-87E5-43D6-BFC6-468CB8479ACC}.Release|x64.Build.0 = Release|Any CPU
+		{A9A12128-87E5-43D6-BFC6-468CB8479ACC}.Release|x86.ActiveCfg = Release|Any CPU
+		{A9A12128-87E5-43D6-BFC6-468CB8479ACC}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -97,5 +111,6 @@ Global
 		{7FBBCDC8-D186-439F-B2BB-17804083BDD6} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{3D522B80-27BB-44B8-AC8E-5DAC81DBF1E0} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{8B9B2823-F379-4FB2-BA3D-5524CC555A94} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{A9A12128-87E5-43D6-BFC6-468CB8479ACC} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

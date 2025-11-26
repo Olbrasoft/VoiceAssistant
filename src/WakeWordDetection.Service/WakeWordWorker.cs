@@ -53,31 +53,6 @@ public class WakeWordWorker : BackgroundService
     /// <param name="e">Wake word detection event arguments.</param>
     private async void OnWakeWordDetected(object? sender, WakeWordDetectedEventArgs e)
     {
-        _logger.LogInformation("🗣️ Wake word detected: {Word} (confidence: {Confidence:P2})", 
-            e.DetectedWord, e.Confidence);
-        
-        // Send desktop notification
-        try
-        {
-            var process = new System.Diagnostics.Process
-            {
-                StartInfo = new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = "/usr/bin/notify-send",
-                    Arguments = $"\"🗣️ Wake Word Detekován: {e.DetectedWord}!\" " +
-                               $"\"Confidence: {e.Confidence:P0}\\nČas: {e.DetectedAt:HH:mm:ss}\" " +
-                               "--urgency=normal --icon=audio-input-microphone --expire-time=3000",
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                }
-            };
-            process.Start();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to send desktop notification");
-        }
-        
         // Rozeslat událost přes WebSocket všem klientům
         var wakeWordEvent = new WakeWordEvent
         {

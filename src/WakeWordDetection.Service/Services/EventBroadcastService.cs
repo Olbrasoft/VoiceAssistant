@@ -42,9 +42,11 @@ public class EventBroadcastService : IEventBroadcastService
     /// <inheritdoc />
     public async Task BroadcastWakeWordDetectedAsync(WakeWordEvent wakeWordEvent)
     {
-        _logger.LogInformation("Broadcasting wake word event: {Word}", wakeWordEvent.Word);
+        _logger.LogInformation("📡 Broadcasting wake word event: {Word}", wakeWordEvent.Word);
         
         // Odeslat všem připojeným klientům
         await _hubContext.Clients.All.SendAsync("WakeWordDetected", wakeWordEvent);
+        
+        _logger.LogInformation("✅ Broadcast completed for: {Word}", wakeWordEvent.Word);
     }
 }
