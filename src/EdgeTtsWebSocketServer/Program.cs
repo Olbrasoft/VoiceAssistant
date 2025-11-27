@@ -1,0 +1,35 @@
+using EdgeTtsWebSocketServer.Services;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Add services to the container
+builder.Services.AddControllers();
+
+// Register EdgeTtsService as singleton
+builder.Services.AddSingleton<EdgeTtsService>();
+
+// Configure Kestrel to listen on specific port
+builder.WebHost.ConfigureKestrel(options =>
+{
+    var port = builder.Configuration.GetValue<int>("EdgeTts:Port", 5555);
+    options.ListenAnyIP(port);
+});
+
+var app = builder.Build();
+
+app.MapControllers();
+
+// Simple health check endpoint
+app.MapGet("/", () => new
+{
+    service = "Edge TTS WebSocket Server",
+    status = "running",
+    version = "1.0.0",
+    endpoints = new[]
+    {
+        "POST /api/speech/speak - Convert text to speech",
+        "DELETE /api/speech/cache - Clear cache"
+    }
+});
+
+app.Run();
