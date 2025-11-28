@@ -101,3 +101,46 @@ The service uses `appsettings.json` for configuration:
 
 - **PushToTalkDictation** - Core library
 - **Microsoft.AspNetCore.SignalR** - Real-time notifications
+
+## Transcription Indicator (System Tray)
+
+A companion Python script displays an animated icon in the system tray during transcription.
+
+### How it works
+
+1. Connects to SignalR hub via WebSocket
+2. Shows animated document icon when `RecordingStopped` event received
+3. Hides icon when `TranscriptionCompleted` or `TranscriptionFailed` received
+4. Animation cycles through 5 SVG frames at 200ms intervals
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `transcription-indicator.py` | Python GTK script with AppIndicator |
+| `transcription-indicator.service` | Systemd user service unit |
+| `assets/document-white-frame*.svg` | Animation frames (1-5) |
+
+### Installation
+
+The deploy script installs both services:
+
+```bash
+./deploy-push-to-talk-dictation.sh
+```
+
+### Manual Start
+
+```bash
+# Activate Python venv
+source ~/voice-assistant/push-to-talk-dictation/venv/bin/activate
+
+# Run indicator
+python3 transcription-indicator.py
+```
+
+### Requirements
+
+- Python 3 with `websocket-client`, `requests`
+- GTK 3 with AyatanaAppIndicator3
+- GNOME Shell with AppIndicator extension
