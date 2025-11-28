@@ -140,14 +140,24 @@ public class WhisperNetTranscriber : ISpeechTranscriber
             // Process with Whisper.net
             var segments = new List<string>();
             
-            await foreach (var segment in _processor!.ProcessAsync(samples, cancellationToken))
+            _logger.LogDebug("Starting Whisper processing...");
+            try
             {
-                if (!string.IsNullOrWhiteSpace(segment.Text))
+                await foreach (var segment in _processor!.ProcessAsync(samples, cancellationToken))
                 {
-                    segments.Add(segment.Text.Trim());
-                    _logger.LogDebug("Segment: {Start} -> {End}: {Text}", 
-                        segment.Start, segment.End, segment.Text);
+                    if (!string.IsNullOrWhiteSpace(segment.Text))
+                    {
+                        segments.Add(segment.Text.Trim());
+                        _logger.LogDebug("Segment: {Start} -> {End}: {Text}", 
+                            segment.Start, segment.End, segment.Text);
+                    }
                 }
+                _logger.LogDebug("Whisper processing completed, {Count} segments found", segments.Count);
+            }
+            catch (Exception procEx)
+            {
+                _logger.LogError(procEx, "Error during Whisper ProcessAsync");
+                throw;
             }
 
             var transcription = string.Join(" ", segments);

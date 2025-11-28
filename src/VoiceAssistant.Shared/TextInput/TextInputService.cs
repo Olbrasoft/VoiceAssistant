@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
-namespace Olbrasoft.VoiceAssistant.Orchestration.Services;
+namespace Olbrasoft.VoiceAssistant.Shared.TextInput;
 
 /// <summary>
 /// Service for sending text to applications.
