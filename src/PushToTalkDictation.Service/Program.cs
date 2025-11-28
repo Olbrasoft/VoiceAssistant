@@ -1,15 +1,34 @@
 using Olbrasoft.VoiceAssistant.PushToTalkDictation;
 using Olbrasoft.VoiceAssistant.PushToTalkDictation.Service;
+using Olbrasoft.VoiceAssistant.PushToTalkDictation.Service.Hubs;
+using Olbrasoft.VoiceAssistant.PushToTalkDictation.Service.Services;
 using Olbrasoft.VoiceAssistant.Shared.Speech;
 using Olbrasoft.VoiceAssistant.Shared.TextInput;
 
-var builder = Host.CreateApplicationBuilder(args);
+var builder = WebApplication.CreateBuilder(args);
 
 // Get configuration values
 var keyboardDevice = builder.Configuration.GetValue<string?>("PushToTalkDictation:KeyboardDevice");
 var ggmlModelPath = builder.Configuration.GetValue<string>("PushToTalkDictation:GgmlModelPath") 
     ?? Path.Combine(AppContext.BaseDirectory, "models", "ggml-medium.bin");
 var whisperLanguage = builder.Configuration.GetValue<string>("PushToTalkDictation:WhisperLanguage") ?? "cs";
+
+// SignalR
+builder.Services.AddSignalR();
+
+// CORS (pro webové klienty)
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+    {
+        policy.AllowAnyOrigin()
+              .AllowAnyHeader()
+              .AllowAnyMethod();
+    });
+});
+
+// PTT Notifier service
+builder.Services.AddSingleton<IPttNotifier, PttNotifier>();
 
 // Register services
 builder.Services.AddSingleton<IKeyboardMonitor>(sp =>
@@ -43,6 +62,15 @@ builder.Services.AddHostedService<DictationWorker>();
 builder.Logging.AddConsole();
 builder.Logging.AddSystemdConsole();
 
-var host = builder.Build();
+var app = builder.Build();
 
-host.Run();
+app.UseCors();
+
+// Map SignalR hub
+app.MapHub<PttHub>("/hubs/ptt");
+
+// Health check endpoint
+app.MapGet("/", () => Results.Ok(new { service = "PushToTalkDictation", status = "running" }));
+
+// Run on port 5050
+app.Run("http://localhost:5050");

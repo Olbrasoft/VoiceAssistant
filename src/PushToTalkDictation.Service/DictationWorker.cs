@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Configuration;
+using Olbrasoft.VoiceAssistant.PushToTalkDictation.Service.Services;
 using Olbrasoft.VoiceAssistant.Shared.Input;
 using Olbrasoft.VoiceAssistant.Shared.Speech;
 using Olbrasoft.VoiceAssistant.Shared.TextInput;
@@ -18,6 +19,7 @@ public class DictationWorker : BackgroundService
     private readonly IAudioRecorder _audioRecorder;
     private readonly ISpeechTranscriber _speechTranscriber;
     private readonly ITextTyper _textTyper;
+    private readonly IPttNotifier _pttNotifier;
     private bool _isRecording;
     private DateTime? _recordingStartTime;
     private KeyCode _triggerKey;
@@ -28,7 +30,8 @@ public class DictationWorker : BackgroundService
         IKeyboardMonitor keyboardMonitor,
         IAudioRecorder audioRecorder,
         ISpeechTranscriber speechTranscriber,
-        ITextTyper textTyper)
+        ITextTyper textTyper,
+        IPttNotifier pttNotifier)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
@@ -36,6 +39,7 @@ public class DictationWorker : BackgroundService
         _audioRecorder = audioRecorder ?? throw new ArgumentNullException(nameof(audioRecorder));
         _speechTranscriber = speechTranscriber ?? throw new ArgumentNullException(nameof(speechTranscriber));
         _textTyper = textTyper ?? throw new ArgumentNullException(nameof(textTyper));
+        _pttNotifier = pttNotifier ?? throw new ArgumentNullException(nameof(pttNotifier));
 
         // Load configuration
         var triggerKeyName = _configuration.GetValue<string>("PushToTalkDictation:TriggerKey", "CapsLock");
@@ -135,6 +139,9 @@ public class DictationWorker : BackgroundService
             _recordingStartTime = DateTime.UtcNow;
 
             _logger.LogInformation("Starting audio recording...");
+            
+            // Notify clients about recording start
+            await _pttNotifier.NotifyRecordingStartedAsync();
 
             // Start recording (runs until cancelled)
             var cts = new CancellationTokenSource();
@@ -156,6 +163,8 @@ public class DictationWorker : BackgroundService
             return;
         }
 
+        double durationSeconds = 0;
+        
         try
         {
             _logger.LogInformation("Stopping audio recording...");
@@ -165,9 +174,21 @@ public class DictationWorker : BackgroundService
             var recordedData = _audioRecorder.GetRecordedData();
             _logger.LogInformation("Recording stopped. Captured {ByteCount} bytes", recordedData.Length);
 
+            // Calculate duration
+            if (_recordingStartTime.HasValue)
+            {
+                durationSeconds = (DateTime.UtcNow - _recordingStartTime.Value).TotalSeconds;
+                _logger.LogInformation("Total recording duration: {Duration:F2}s", durationSeconds);
+            }
+            
+            // Notify clients about recording stop
+            await _pttNotifier.NotifyRecordingStoppedAsync(durationSeconds);
+
             if (recordedData.Length > 0)
             {
-                // Sherpa-ONNX processes raw PCM data directly (no WAV conversion needed)
+                // Notify clients about transcription start
+                await _pttNotifier.NotifyTranscriptionStartedAsync();
+                
                 _logger.LogInformation("Starting transcription...");
                 var transcription = await _speechTranscriber.TranscribeAsync(recordedData);
 
@@ -176,29 +197,32 @@ public class DictationWorker : BackgroundService
                     _logger.LogInformation("Transcription successful: {Text} (confidence: {Confidence:F3})", 
                         transcription.Text, transcription.Confidence);
 
+                    // Notify clients about successful transcription
+                    await _pttNotifier.NotifyTranscriptionCompletedAsync(transcription.Text, transcription.Confidence);
+
                     // Type transcribed text
                     await _textTyper.TypeTextAsync(transcription.Text);
                     _logger.LogInformation("Text typed successfully");
                 }
                 else
                 {
-                    _logger.LogWarning("Transcription failed or empty: {Error}", transcription.ErrorMessage);
+                    var errorMessage = transcription.ErrorMessage ?? "Empty transcription result";
+                    _logger.LogWarning("Transcription failed or empty: {Error}", errorMessage);
+                    
+                    // Notify clients about failed transcription
+                    await _pttNotifier.NotifyTranscriptionFailedAsync(errorMessage);
                 }
             }
             else
             {
                 _logger.LogWarning("No audio data recorded");
-            }
-
-            if (_recordingStartTime.HasValue)
-            {
-                var duration = DateTime.UtcNow - _recordingStartTime.Value;
-                _logger.LogInformation("Total recording duration: {Duration:F2}s", duration.TotalSeconds);
+                await _pttNotifier.NotifyTranscriptionFailedAsync("No audio data recorded");
             }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to stop recording");
+            await _pttNotifier.NotifyTranscriptionFailedAsync(ex.Message);
         }
         finally
         {
