@@ -2,7 +2,7 @@
 """
 Transcription Indicator - System tray icon for speech-to-text status
 
-Shows a document icon in the system tray when transcription is in progress.
+Shows an animated document icon in the system tray when transcription is in progress.
 Connects to PushToTalkDictation.Service via SignalR WebSocket.
 
 Events:
@@ -51,15 +51,20 @@ class TranscriptionIndicator:
     """System tray indicator that shows during transcription."""
 
     def __init__(self):
-        # Static icon for transcription
-        self.icon_path = os.path.join(ASSETS_DIR, "document.svg")
+        # Animation frames
+        self.frames = [
+            os.path.join(ASSETS_DIR, f"document-white-frame{i}.svg")
+            for i in range(1, 6)
+        ]
+        self.current_frame = 0
+        self.animation_timer = None
         self.ws = None
         self.running = True
 
         # Create AppIndicator (initially hidden)
         self.indicator = AppIndicator3.Indicator.new(
             "transcription-indicator",
-            self.icon_path,
+            self.frames[0],
             AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
         )
 
@@ -192,14 +197,32 @@ class TranscriptionIndicator:
             GLib.idle_add(self.hide_indicator)
 
     def show_indicator(self):
-        """Show the indicator."""
+        """Show the indicator with animation."""
         self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
+
+        # Start animation if not already running
+        if self.animation_timer is None:
+            self.current_frame = 0
+            self.animation_timer = GLib.timeout_add(200, self.animate)
+
         return False  # For GLib.idle_add
 
     def hide_indicator(self):
-        """Hide the indicator."""
+        """Hide the indicator and stop animation."""
         self.indicator.set_status(AppIndicator3.IndicatorStatus.PASSIVE)
+
+        # Stop animation
+        if self.animation_timer is not None:
+            GLib.source_remove(self.animation_timer)
+            self.animation_timer = None
+
         return False  # For GLib.idle_add
+
+    def animate(self):
+        """Cycle through animation frames."""
+        self.current_frame = (self.current_frame + 1) % len(self.frames)
+        self.indicator.set_icon_full(self.frames[self.current_frame], "Transcribing...")
+        return True  # Continue animation
 
     def quit(self, widget=None):
         """Clean shutdown."""
