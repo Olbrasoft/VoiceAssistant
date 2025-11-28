@@ -228,20 +228,32 @@ public class EvdevKeyboardMonitor : IKeyboardMonitor
 
     private static string FindKeyboardDevice()
     {
-        // Try to find keyboard device in /dev/input/by-path/
-        var byPathDir = "/dev/input/by-path";
+        // First, try to find a real keyboard (one with LED indicators like CapsLock)
+        // by checking /proc/bus/input/devices for devices with "leds" handler
+        var realKeyboard = FindRealKeyboardFromProcDevices();
+        if (realKeyboard != null)
+        {
+            return realKeyboard;
+        }
 
+        // Fallback: Try to find keyboard device in /dev/input/by-path/
+        // Prefer devices that don't contain "mouse" in their path
+        var byPathDir = "/dev/input/by-path";
         if (Directory.Exists(byPathDir))
         {
-            var kbdDevices = Directory.GetFiles(byPathDir, "*kbd");
+            var kbdDevices = Directory.GetFiles(byPathDir, "*kbd")
+                .Where(f => !f.Contains("mouse", StringComparison.OrdinalIgnoreCase))
+                .OrderBy(f => f) // Consistent ordering
+                .ToArray();
+            
             if (kbdDevices.Length > 0)
             {
                 return kbdDevices[0];
             }
         }
 
-        // Fallback: try common event devices
-        for (int i = 0; i < 10; i++)
+        // Last fallback: try common event devices
+        for (int i = 0; i < 30; i++)
         {
             var devicePath = $"/dev/input/event{i}";
             if (File.Exists(devicePath))
@@ -251,6 +263,64 @@ public class EvdevKeyboardMonitor : IKeyboardMonitor
         }
 
         throw new FileNotFoundException("No keyboard input device found. Check /dev/input/");
+    }
+
+    /// <summary>
+    /// Finds a real keyboard device by parsing /proc/bus/input/devices.
+    /// Real keyboards have "leds" in their Handlers line (for CapsLock/NumLock LEDs).
+    /// </summary>
+    private static string? FindRealKeyboardFromProcDevices()
+    {
+        const string devicesPath = "/proc/bus/input/devices";
+        if (!File.Exists(devicesPath))
+            return null;
+
+        try
+        {
+            var content = File.ReadAllText(devicesPath);
+            var devices = content.Split("\n\n", StringSplitOptions.RemoveEmptyEntries);
+
+            foreach (var device in devices)
+            {
+                var lines = device.Split('\n');
+                string? name = null;
+                string? handlers = null;
+
+                foreach (var line in lines)
+                {
+                    if (line.StartsWith("N: Name="))
+                        name = line;
+                    if (line.StartsWith("H: Handlers="))
+                        handlers = line;
+                }
+
+                // Look for keyboard with LED support (real keyboards have "leds" handler)
+                // Skip devices that are mice or have "Mouse" in name
+                if (handlers != null && 
+                    handlers.Contains("kbd") && 
+                    handlers.Contains("leds") &&
+                    (name == null || !name.Contains("Mouse", StringComparison.OrdinalIgnoreCase)))
+                {
+                    // Extract event number from handlers line
+                    // Format: H: Handlers=sysrq kbd leds event17
+                    var match = System.Text.RegularExpressions.Regex.Match(handlers, @"event(\d+)");
+                    if (match.Success)
+                    {
+                        var eventPath = $"/dev/input/event{match.Groups[1].Value}";
+                        if (File.Exists(eventPath))
+                        {
+                            return eventPath;
+                        }
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // Ignore errors, fall through to other methods
+        }
+
+        return null;
     }
 
     /// <inheritdoc/>

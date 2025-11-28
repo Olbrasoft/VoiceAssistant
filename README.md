@@ -1,123 +1,196 @@
 # VoiceAssistant
 
-Voice assistant platform with push-to-talk dictation, wake word detection, and orchestration.
+Voice assistant platform for Linux with push-to-talk dictation, wake word detection, text-to-speech, and orchestration.
+
+## Features
+
+- **Push-to-Talk Dictation** - Hold CapsLock to record, release to transcribe using GPU-accelerated Whisper
+- **Wake Word Detection** - Offline detection using OpenWakeWord ONNX models (Jarvis, Alexa, etc.)
+- **Text-to-Speech** - Microsoft Edge TTS integration via WebSocket
+- **Orchestration** - Coordinates wake word detection with responses
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        VoiceAssistant Platform                       │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌──────────────────┐    ┌──────────────────┐    ┌───────────────┐  │
+│  │  PushToTalk      │    │  WakeWord        │    │  EdgeTts      │  │
+│  │  Dictation       │    │  Detection       │    │  WebSocket    │  │
+│  │  Service         │    │  Service         │    │  Server       │  │
+│  └────────┬─────────┘    └────────┬─────────┘    └───────┬───────┘  │
+│           │                       │                      │          │
+│           ▼                       ▼                      ▼          │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │                    VoiceAssistant.Shared                     │   │
+│  │  (Whisper transcription, text input, audio processing)       │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │                      Orchestration                            │   │
+│  │  (Coordinates wake word events and responses)                 │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 ## Projects
 
-### 1. PushToTalkDictation
-Push-to-talk dictation service using Caps Lock key with GPU-accelerated Whisper.
+| Project | Description | Type |
+|---------|-------------|------|
+| [VoiceAssistant.Shared](src/VoiceAssistant.Shared/) | Shared library with speech recognition, text input, audio processing | Library |
+| [PushToTalkDictation](src/PushToTalkDictation/) | Core library for push-to-talk recording and keyboard monitoring | Library |
+| [PushToTalkDictation.Service](src/PushToTalkDictation.Service/) | Systemd service for CapsLock-triggered dictation | Worker Service |
+| [WakeWordDetection](src/WakeWordDetection/) | Core library for wake word detection using ONNX models | Library |
+| [WakeWordDetection.Service](src/WakeWordDetection.Service/) | ASP.NET Core service with SignalR WebSocket notifications | Web API |
+| [EdgeTtsWebSocketServer](src/EdgeTtsWebSocketServer/) | Text-to-Speech server using Microsoft Edge TTS | Web API |
+| [Orchestration](src/Orchestration/) | Orchestrator connecting wake word detection with responses | Worker Service |
 
-**Technology:** .NET 10, ONNX Runtime, CUDA GPU, ALSA audio
+## Quick Start
 
-**Features:**
-- Hold Caps Lock to record, release to transcribe
-- Custom ONNX Whisper implementation with CUDA GPU
-- Supports small/medium Whisper models
-- Chunking for audio longer than 30 seconds
-- Czech language optimized
+### Prerequisites
 
-**Location:** `src/PushToTalkDictation/`, `src/PushToTalkDictation.Service/`
+- .NET 10 SDK
+- Linux with ALSA audio system
+- NVIDIA GPU with CUDA (for Whisper transcription)
+- PipeWire or PulseAudio
 
-**Key files:**
-- `VoiceAssistant.Shared/Speech/OnnxWhisperTranscriber.cs` - ONNX Whisper with GPU
-- `VoiceAssistant.Shared/Speech/AudioPreprocessor.cs` - Mel spectrogram
-- `VoiceAssistant.Shared/Speech/TokenDecoder.cs` - BPE token decoder
+### Build
 
-### 2. WakeWordDetection
-Offline wake word detection service using OpenWakeWord and ONNX models.
+```bash
+# Clone repository
+git clone https://github.com/Olbrasoft/VoiceAssistant.git
+cd VoiceAssistant
 
-**Technology:** .NET 10, ASP.NET Core, SignalR WebSocket, ALSA audio
+# Build all projects
+dotnet build
 
-**Features:**
-- Offline wake word detection (hey_jarvis, alexa, hey_mycroft, hey_rhasspy)
-- Per-model threshold configuration
-- Real-time WebSocket notifications via SignalR
-- REST API for status and testing
+# Run tests
+dotnet test
+```
 
-**Location:** `src/WakeWordDetection/`, `src/WakeWordDetection.Service/`
+### Deploy Services
 
-### 3. Orchestration
-Voice assistant orchestrator that coordinates wake word detection and audio responses.
+```bash
+# Push-to-Talk Dictation
+./src/PushToTalkDictation.Service/deploy.sh
+systemctl --user start push-to-talk-dictation
 
-**Technology:** .NET 10 Worker Service, SignalR Client
+# Wake Word Detection
+./src/WakeWordDetection.Service/deploy.sh
+systemctl --user start wakeword-listener
 
-**Features:**
-- Connects to WakeWordDetection via SignalR WebSocket
-- Plays wake-word specific audio responses
+# Edge TTS Server
+./src/EdgeTtsWebSocketServer/deploy-edge-tts.sh
+systemctl --user start edge-tts-server
+```
 
-**Location:** `src/Orchestration/`
+## Services
 
-### 4. EdgeTtsWebSocketServer
-Text-to-Speech server using Microsoft Edge TTS.
+### Push-to-Talk Dictation (Port: N/A - keyboard triggered)
 
-**Technology:** .NET 10, WebSocket
+Hold CapsLock to record audio, release to transcribe to text.
 
-**Location:** `src/EdgeTtsWebSocketServer/`
+```bash
+# Check status
+systemctl --user status push-to-talk-dictation
 
-## Structure
+# View logs
+journalctl --user -u push-to-talk-dictation -f
+```
+
+### Wake Word Detection (Port: 5000)
+
+Listens for wake words and broadcasts events via SignalR.
+
+```bash
+# WebSocket endpoint
+ws://localhost:5000/hubs/wakeword
+
+# REST API
+curl http://localhost:5000/swagger
+```
+
+### Edge TTS Server (Port: 5555)
+
+Text-to-Speech using Microsoft Edge TTS.
+
+```bash
+# Speak text
+curl -X POST http://localhost:5555/speak \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Ahoj světe"}'
+```
+
+## Technology Stack
+
+- **.NET 10** - Runtime and SDK
+- **ASP.NET Core** - Web API and SignalR
+- **ONNX Runtime** - ML model inference
+- **Whisper.net** - Speech-to-text with CUDA GPU acceleration
+- **OpenWakeWord** - Wake word detection models
+- **ALSA/PipeWire** - Audio capture on Linux
+- **Microsoft Edge TTS** - Text-to-speech via WebSocket
+
+## Models
+
+### Whisper Models
+
+Located in `~/voice-assistant/push-to-talk-dictation/models/`
+
+| Model | Speed | Quality | GPU Memory |
+|-------|-------|---------|------------|
+| ggml-large-v3.bin | ~2s/chunk | Best | ~3GB |
+| sherpa-onnx-whisper-medium | ~5s/chunk | Good | ~1.5GB |
+| sherpa-onnx-whisper-small | ~1s/chunk | Basic | ~500MB |
+
+### Wake Word Models
+
+Located in `~/voice-assistant/wake-word-detection/Models/`
+
+- `hey_jarvis.onnx` - "Hey Jarvis" wake word
+- `alexa.onnx` - "Alexa" wake word
+- `hey_mycroft.onnx` - "Hey Mycroft" wake word
+
+## Testing
+
+```bash
+# Run all tests (271 tests)
+dotnet test
+
+# Run specific project tests
+dotnet test tests/VoiceAssistant.Shared.Tests
+dotnet test tests/WakeWordDetection.Tests
+dotnet test tests/PushToTalkDictation.Tests
+```
+
+## Project Structure
 
 ```
 VoiceAssistant/
 ├── src/
-│   ├── VoiceAssistant.Shared/           # Shared library (ONNX Whisper, etc.)
-│   │   └── Speech/
-│   │       ├── OnnxWhisperTranscriber.cs
-│   │       ├── AudioPreprocessor.cs
-│   │       └── TokenDecoder.cs
-│   ├── PushToTalkDictation/             # Push-to-talk core library
-│   ├── PushToTalkDictation.Service/     # Systemd service
-│   ├── WakeWordDetection/               # Wake word detection library
-│   ├── WakeWordDetection.Service/       # ASP.NET Core service
-│   ├── Orchestration/                   # Voice assistant orchestrator
-│   └── EdgeTtsWebSocketServer/          # TTS server
+│   ├── VoiceAssistant.Shared/          # Shared library
+│   │   ├── Speech/                     # Whisper transcription
+│   │   ├── TextInput/                  # Text typing (dotool, xdotool)
+│   │   └── Input/                      # CapsLock state detection
+│   ├── PushToTalkDictation/            # PTT core library
+│   ├── PushToTalkDictation.Service/    # PTT systemd service
+│   ├── WakeWordDetection/              # Wake word core library
+│   ├── WakeWordDetection.Service/      # Wake word API service
+│   ├── EdgeTtsWebSocketServer/         # TTS server
+│   └── Orchestration/                  # Event orchestrator
 ├── tests/
-│   ├── VoiceAssistant.Shared.Tests/
-│   ├── WakeWordDetection.Tests/
-│   └── WakeWordDetection.Service.Tests/
+│   ├── VoiceAssistant.Shared.Tests/    # 42 tests
+│   ├── PushToTalkDictation.Tests/      # 72 tests
+│   ├── PushToTalkDictation.Service.Tests/
+│   ├── WakeWordDetection.Tests/        # 81 tests
+│   ├── WakeWordDetection.Service.Tests/# 32 tests
+│   ├── Orchestration.Tests/            # 43 tests
+│   └── EdgeTtsWebSocketServer.Tests/
 └── VoiceAssistant.sln
 ```
-
-## Build & Deploy
-
-### PushToTalkDictation
-
-```bash
-# Build
-dotnet build src/PushToTalkDictation.Service/PushToTalkDictation.Service.csproj -c Release
-
-# Publish
-dotnet publish src/PushToTalkDictation.Service/PushToTalkDictation.Service.csproj \
-  -c Release -o ~/voice-assistant/push-to-talk-dictation/
-
-# Restart service
-systemctl --user restart push-to-talk-dictation
-
-# Check logs
-journalctl --user -u push-to-talk-dictation -f
-```
-
-### WakeWordDetection
-
-```bash
-./deploy.sh
-# Service runs on port 5000
-# WebSocket: ws://localhost:5000/hubs/wakeword
-```
-
-## Models
-
-**Whisper models location:** `~/voice-assistant/push-to-talk-dictation/models/`
-
-| Model | Speed | Quality |
-|-------|-------|---------|
-| sherpa-onnx-whisper-small | ~1s/chunk | Good |
-| sherpa-onnx-whisper-medium | ~5-7s/chunk | Better |
-
-## Requirements
-
-- .NET 10 SDK
-- NVIDIA GPU with CUDA support
-- ALSA audio system (Linux)
 
 ## Development
 
@@ -126,7 +199,7 @@ journalctl --user -u push-to-talk-dictation -f
 **Code Style:**
 - 4-space indentation
 - PascalCase for methods/classes
-- `_camelCase` for private fields  
+- `_camelCase` for private fields
 - File-scoped namespaces
 - Nullable reference types enabled
 

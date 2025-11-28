@@ -7,10 +7,34 @@ namespace Olbrasoft.VoiceAssistant.Shared.TextInput;
 /// Text typer implementation using clipboard + dotool for Linux Wayland.
 /// Saves clipboard content, pastes text, then restores original clipboard.
 /// This approach supports full Unicode including Czech diacritics (háčky, čárky).
+/// Automatically detects terminal windows and uses appropriate paste shortcut.
 /// </summary>
 public class DotoolTextTyper : ITextTyper
 {
     private readonly ILogger<DotoolTextTyper> _logger;
+    
+    /// <summary>
+    /// Terminal window class names that require Ctrl+Shift+V for pasting.
+    /// </summary>
+    private static readonly HashSet<string> TerminalClasses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "kitty",
+        "gnome-terminal",
+        "gnome-terminal-server",
+        "org.gnome.Terminal",
+        "konsole",
+        "xfce4-terminal",
+        "mate-terminal",
+        "tilix",
+        "terminator",
+        "alacritty",
+        "wezterm",
+        "foot",
+        "xterm",
+        "urxvt",
+        "st",
+        "terminology"
+    };
 
     /// <summary>
     /// Initializes a new instance of the <see cref="DotoolTextTyper"/> class.
@@ -133,15 +157,16 @@ public class DotoolTextTyper : ITextTyper
             // Small delay to ensure clipboard is ready
             await Task.Delay(50, cancellationToken);
 
-            // Step 3: Simulate paste - send both Ctrl+Shift+V (terminal) and Ctrl+V (GUI apps)
-            // Terminal will respond to Ctrl+Shift+V, GUI apps will respond to Ctrl+V
-            // The other shortcut is ignored by each type of application
+            // Step 3: Detect if active window is a terminal and use appropriate paste shortcut
+            var pasteShortcut = await GetPasteShortcutAsync(cancellationToken);
+            _logger.LogInformation("Using paste shortcut: {Shortcut}", pasteShortcut);
+            
             var dotoolProcess = new Process
             {
                 StartInfo = new ProcessStartInfo
                 {
                     FileName = "/bin/bash",
-                    Arguments = "-c \"echo -e 'key ctrl+shift+v\\nkey ctrl+v' | dotool\"",
+                    Arguments = $"-c \"echo 'key {pasteShortcut}' | dotool\"",
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     UseShellExecute = false,
@@ -202,6 +227,111 @@ public class DotoolTextTyper : ITextTyper
         {
             _logger.LogError(ex, "Failed to type text: {Text}", text);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Gets the appropriate paste shortcut based on the active window type.
+    /// Terminals use Ctrl+Shift+V, other applications use Ctrl+V.
+    /// </summary>
+    private async Task<string> GetPasteShortcutAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var windowClass = await GetActiveWindowClassAsync(cancellationToken);
+            
+            if (!string.IsNullOrEmpty(windowClass) && TerminalClasses.Contains(windowClass))
+            {
+                _logger.LogInformation("Detected terminal window: {WindowClass}, using Ctrl+Shift+V", windowClass);
+                return "ctrl+shift+v";
+            }
+            
+            _logger.LogInformation("Non-terminal window detected: {WindowClass}, using Ctrl+V", windowClass ?? "(unknown)");
+            return "ctrl+v";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not detect window class, defaulting to Ctrl+V");
+            return "ctrl+v";
+        }
+    }
+
+    /// <summary>
+    /// Gets the WM_CLASS of the currently active window using window-calls GNOME Shell extension.
+    /// Uses the List method and finds the window with focus=true.
+    /// </summary>
+    private async Task<string?> GetActiveWindowClassAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "gdbus",
+                    Arguments = "call --session --dest org.gnome.Shell " +
+                               "--object-path /org/gnome/Shell/Extensions/Windows " +
+                               "--method org.gnome.Shell.Extensions.Windows.List",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+
+            process.Start();
+            var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
+            await process.WaitForExitAsync(cancellationToken);
+
+            if (process.ExitCode == 0 && !string.IsNullOrWhiteSpace(output))
+            {
+                _logger.LogDebug("D-Bus window-calls returned: {Output}", output?.Trim());
+                    
+                // Output format is: ('[{"wm_class":"kitty",...,"focus":true},...]',)
+                // Extract the JSON array from the gdbus output
+                var jsonStart = output.IndexOf('[');
+                var jsonEnd = output.LastIndexOf(']');
+                
+                if (jsonStart >= 0 && jsonEnd > jsonStart)
+                {
+                    var jsonArray = output.Substring(jsonStart, jsonEnd - jsonStart + 1);
+                    
+                    // Parse JSON and find focused window
+                    var windows = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(jsonArray);
+                    
+                    foreach (var window in windows.EnumerateArray())
+                    {
+                        if (window.TryGetProperty("focus", out var focusProp) && focusProp.GetBoolean())
+                        {
+                            if (window.TryGetProperty("wm_class", out var wmClassProp))
+                            {
+                                var windowClass = wmClassProp.GetString();
+                                _logger.LogDebug("Focused window class: {WindowClass}", windowClass);
+                                return windowClass;
+                            }
+                        }
+                    }
+                    
+                    _logger.LogWarning("No focused window found in window list");
+                }
+                else
+                {
+                    _logger.LogWarning("Could not find JSON array in output: {Output}", output?.Trim());
+                }
+            }
+            else
+            {
+                var error = await process.StandardError.ReadToEndAsync(cancellationToken);
+                _logger.LogWarning("D-Bus call failed: ExitCode={ExitCode}, Error={Error}", 
+                    process.ExitCode, error?.Trim());
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to get active window class via D-Bus");
+            return null;
         }
     }
 }
