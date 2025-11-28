@@ -15,7 +15,7 @@ StandardError=journal
 
 # Permissions for /dev/input/eventX access
 # User must be in 'input' group: sudo usermod -a -G input jirka
-SupplementaryGroups=input
+# Note: SupplementaryGroups is not supported in user units
 
 [Install]
 WantedBy=default.target
