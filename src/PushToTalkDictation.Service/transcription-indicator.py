@@ -2,16 +2,16 @@
 """
 Transcription Indicator - System tray icon for speech-to-text status
 
-Shows an animated document icon in the system tray when transcription is in progress.
-Connects to PushToTalkDictation.Service via SignalR to receive real-time events.
+Shows a document icon in the system tray when transcription is in progress.
+Connects to PushToTalkDictation.Service via SignalR WebSocket.
 
 Events:
-- TranscriptionStarted (2): Show icon with animation
+- RecordingStopped (1): Show icon (transcription starting)
 - TranscriptionCompleted (3): Hide icon
 - TranscriptionFailed (4): Hide icon
 
 Requires:
-- pip install signalrcore
+- pip install websocket-client requests
 - libayatana-appindicator3-1 (for system tray)
 """
 
@@ -24,15 +24,19 @@ from gi.repository import AyatanaAppIndicator3 as AppIndicator3, Gtk, GLib
 import signal
 import sys
 import os
+import json
 import threading
+import time
 from functools import partial
-from signalrcore.hub_connection_builder import HubConnectionBuilder
+import websocket
+import requests
 
 # Unbuffered output for logging
 print = partial(print, flush=True)
 
 # Configuration
 SIGNALR_URL = "http://localhost:5050/hubs/ptt"
+WS_URL = "ws://localhost:5050/hubs/ptt"
 ASSETS_DIR = "/home/jirka/voice-assistant/push-to-talk-dictation/assets"
 
 # Event types from PttEventType enum
@@ -47,18 +51,15 @@ class TranscriptionIndicator:
     """System tray indicator that shows during transcription."""
 
     def __init__(self):
-        # Animation frames
-        self.frames = [
-            os.path.join(ASSETS_DIR, f"document-white-frame{i}.svg")
-            for i in range(1, 6)
-        ]
-        self.current_frame = 0
-        self.animation_timer = None
+        # Static icon for transcription
+        self.icon_path = os.path.join(ASSETS_DIR, "document.svg")
+        self.ws = None
+        self.running = True
 
         # Create AppIndicator (initially hidden)
         self.indicator = AppIndicator3.Indicator.new(
             "transcription-indicator",
-            self.frames[0],
+            self.icon_path,
             AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
         )
 
@@ -84,110 +85,130 @@ class TranscriptionIndicator:
 
         self.indicator.set_menu(menu)
 
-        # SignalR connection
-        self.hub_connection = None
-        self.connect_signalr()
+        # Start WebSocket connection in background
+        self.connect_websocket()
 
         print("✅ Transcription Indicator initialized")
 
-    def connect_signalr(self):
-        """Connect to SignalR hub."""
-        print(f"🔌 Connecting to {SIGNALR_URL}...")
+    def connect_websocket(self):
+        """Connect to SignalR hub via WebSocket."""
 
-        self.hub_connection = (
-            HubConnectionBuilder()
-            .with_url(SIGNALR_URL)
-            .with_automatic_reconnect(
-                {
-                    "type": "raw",
-                    "keep_alive_interval": 10,
-                    "reconnect_interval": 5,
-                    "max_attempts": 100,
-                }
-            )
-            .build()
-        )
+        def ws_thread():
+            while self.running:
+                try:
+                    # Negotiate to get connection ID
+                    print(f"🔌 Negotiating with {SIGNALR_URL}...")
+                    resp = requests.post(f"{SIGNALR_URL}/negotiate", timeout=5)
+                    data = resp.json()
+                    conn_id = data["connectionId"]
+                    print(f"📡 Got connection ID: {conn_id}")
 
-        # Register event handlers
-        self.hub_connection.on("Connected", self.on_connected)
-        self.hub_connection.on("PttEvent", self.on_ptt_event)
-        self.hub_connection.on_open(lambda: print("✅ SignalR connected"))
-        self.hub_connection.on_close(lambda: print("❌ SignalR disconnected"))
-        self.hub_connection.on_error(lambda e: print(f"⚠️ SignalR error: {e}"))
+                    # Connect WebSocket
+                    ws_url = f"{WS_URL}?id={conn_id}"
+                    print(f"🔌 Connecting to WebSocket...")
 
-        # Start connection in background thread
-        def start_connection():
-            try:
-                self.hub_connection.start()
-            except Exception as e:
-                print(f"❌ Failed to connect: {e}")
-                # Retry after 5 seconds
-                GLib.timeout_add_seconds(5, self.retry_connect)
+                    self.ws = websocket.WebSocketApp(
+                        ws_url,
+                        on_open=self.on_ws_open,
+                        on_message=self.on_ws_message,
+                        on_error=self.on_ws_error,
+                        on_close=self.on_ws_close,
+                    )
+                    self.ws.run_forever()
 
-        thread = threading.Thread(target=start_connection, daemon=True)
+                except Exception as e:
+                    print(f"❌ Connection error: {e}")
+
+                if self.running:
+                    print("🔄 Reconnecting in 5 seconds...")
+                    time.sleep(5)
+
+        thread = threading.Thread(target=ws_thread, daemon=True)
         thread.start()
 
-    def retry_connect(self):
-        """Retry SignalR connection."""
-        print("🔄 Retrying SignalR connection...")
-        self.connect_signalr()
-        return False  # Don't repeat
+    def on_ws_open(self, ws):
+        """Handle WebSocket open."""
+        print("✅ WebSocket connected")
+        # Send SignalR handshake
+        handshake = json.dumps({"protocol": "json", "version": 1}) + "\x1e"
+        ws.send(handshake)
 
-    def on_connected(self, connection_id):
-        """Handle connection event."""
-        print(f"📡 Connected with ID: {connection_id}")
+    def on_ws_message(self, ws, message):
+        """Handle WebSocket message."""
+        # SignalR messages are separated by \x1e
+        for msg in message.split("\x1e"):
+            if not msg.strip():
+                continue
+            try:
+                data = json.loads(msg)
+                self.handle_signalr_message(data)
+            except json.JSONDecodeError:
+                pass
+
+    def on_ws_error(self, ws, error):
+        """Handle WebSocket error."""
+        print(f"⚠️ WebSocket error: {error}")
+
+    def on_ws_close(self, ws, close_status_code, close_msg):
+        """Handle WebSocket close."""
+        print(f"❌ WebSocket closed: {close_status_code} {close_msg}")
+
+    def handle_signalr_message(self, data):
+        """Handle parsed SignalR message."""
+        msg_type = data.get("type")
+        target = data.get("target")
+
+        # Type 1 = Invocation (method call)
+        if msg_type == 1 and target == "PttEvent":
+            args = data.get("arguments", [])
+            if args:
+                self.on_ptt_event(args[0])
+
+        # Type 6 = Ping - ignore
+        elif msg_type == 6:
+            pass
 
     def on_ptt_event(self, event):
         """Handle PTT events from SignalR."""
+        # Event can be a list (from arguments) or dict
+        if isinstance(event, list) and len(event) > 0:
+            event = event[0]
+
+        print(f"📨 Received event: {event}")
+
         event_type = event.get("eventType", -1)
 
-        if event_type == EVENT_TRANSCRIPTION_STARTED:
-            print("⏳ Transcription started - showing indicator")
+        if event_type == EVENT_RECORDING_STOPPED:
+            print("⏳ Recording stopped - showing indicator")
             GLib.idle_add(self.show_indicator)
 
         elif event_type in (EVENT_TRANSCRIPTION_COMPLETED, EVENT_TRANSCRIPTION_FAILED):
             text = event.get("text", "")
             error = event.get("errorMessage", "")
             if event_type == EVENT_TRANSCRIPTION_COMPLETED:
-                print(f"✅ Transcription completed: {text[:50]}...")
+                print(f"✅ Transcription completed: {text[:50] if text else ''}...")
             else:
                 print(f"❌ Transcription failed: {error}")
             GLib.idle_add(self.hide_indicator)
 
     def show_indicator(self):
-        """Show the indicator with animation."""
+        """Show the indicator."""
         self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
-
-        # Start animation if not already running
-        if self.animation_timer is None:
-            self.animation_timer = GLib.timeout_add(400, self.animate)
-
         return False  # For GLib.idle_add
 
     def hide_indicator(self):
         """Hide the indicator."""
         self.indicator.set_status(AppIndicator3.IndicatorStatus.PASSIVE)
-
-        # Stop animation
-        if self.animation_timer is not None:
-            GLib.source_remove(self.animation_timer)
-            self.animation_timer = None
-
         return False  # For GLib.idle_add
-
-    def animate(self):
-        """Cycle through animation frames."""
-        self.current_frame = (self.current_frame + 1) % len(self.frames)
-        self.indicator.set_icon_full(self.frames[self.current_frame], "Transcribing...")
-        return True  # Continue animation
 
     def quit(self, widget=None):
         """Clean shutdown."""
         print("👋 Shutting down...")
+        self.running = False
 
-        if self.hub_connection:
+        if self.ws:
             try:
-                self.hub_connection.stop()
+                self.ws.close()
             except:
                 pass
 
