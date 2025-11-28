@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- Obdélník dokumentu - statický, vždy viditelný - BÍLÁ -->
+  <rect x="3" y="2" width="10" height="12" rx="0.5" 
+        style="fill:none;stroke:#ffffff;stroke-width:2;"/>
+  
+  <!-- První řádek - objeví se po 0.5s - BÍLÁ -->
+  <rect x="4.5" y="4.5" width="7" height="1.2" style="fill:#ffffff;opacity:0;">
+    <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.17;0.83;1" dur="3s" repeatCount="indefinite"/>
+  </rect>
+  
+  <!-- Druhý řádek - objeví se po 1s - BÍLÁ -->
+  <rect x="4.5" y="7" width="7" height="1.2" style="fill:#ffffff;opacity:0;">
+    <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.33;0.5;0.83;1" dur="3s" repeatCount="indefinite"/>
+  </rect>
+  
+  <!-- Třetí řádek - objeví se po 1.5s - BÍLÁ -->
+  <rect x="4.5" y="9.5" width="7" height="1.2" style="fill:#ffffff;opacity:0;">
+    <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.5;0.67;0.83;1" dur="3s" repeatCount="indefinite"/>
+  </rect>
+  
+  <!-- Čtvrtý řádek - objeví se po 2s - BÍLÁ -->
+  <rect x="4.5" y="12" width="5" height="1.2" style="fill:#ffffff;opacity:0;">
+    <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.67;0.83;0.83;1" dur="3s" repeatCount="indefinite"/>
+  </rect>
+</svg>

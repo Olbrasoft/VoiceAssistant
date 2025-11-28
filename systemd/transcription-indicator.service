@@ -1,0 +1,16 @@
+[Unit]
+Description=Transcription Indicator - System tray icon during speech-to-text
+After=graphical-session.target push-to-talk-dictation.service
+
+[Service]
+Type=simple
+Environment=DISPLAY=:1
+WorkingDirectory=/home/jirka/voice-assistant/push-to-talk-dictation
+ExecStart=/home/jirka/voice-assistant/push-to-talk-dictation/venv/bin/python3 /home/jirka/voice-assistant/push-to-talk-dictation/transcription-indicator.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
