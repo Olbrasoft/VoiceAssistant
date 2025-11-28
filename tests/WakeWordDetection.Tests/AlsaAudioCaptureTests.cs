@@ -127,18 +127,28 @@ public class AlsaAudioCaptureTests
     }
 
     [Fact]
-    public void StartCaptureAsync_ReturnsTask()
+    public async Task StartCaptureAsync_ReturnsTask()
     {
         // Arrange
         var capture = new AlsaAudioCapture();
         
-        // This test only verifies that the method exists and returns correctly
-        // The actual capture won't start without pw-record being available
-        
-        // Assert - method signature is correct and returns Task
-        var task = capture.StartCaptureAsync();
-        Assert.NotNull(task);
-        
-        // Note: We don't dispose because it may fail due to incomplete async capture
+        try
+        {
+            // This test only verifies that the method exists and returns correctly
+            // The actual capture may start pw-record process
+            
+            // Assert - method signature is correct and returns Task
+            var task = capture.StartCaptureAsync();
+            Assert.NotNull(task);
+            
+            // Give it a moment to start
+            await Task.Delay(100);
+        }
+        finally
+        {
+            // CRITICAL: Always stop capture and dispose to prevent hanging processes
+            await capture.StopCaptureAsync();
+            capture.Dispose();
+        }
     }
 }
