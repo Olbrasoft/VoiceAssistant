@@ -47,7 +47,7 @@ public class SpeechRecognitionService
         {
             var processStartInfo = new ProcessStartInfo
             {
-                FileName = "python3",
+                FileName = "/home/jirka/miniconda3/bin/python3",
                 Arguments = $"\"{_recordingScriptPath}\" \"{outputFile}\" {maxDurationSeconds} {silenceThresholdAmplitude} {maxSilenceSeconds}",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -138,7 +138,7 @@ public class SpeechRecognitionService
 
             var processStartInfo = new ProcessStartInfo
             {
-                FileName = "python3",
+                FileName = "/home/jirka/miniconda3/bin/python3",
                 Arguments = $"\"{_transcriptionScriptPath}\" \"{audioFilePath}\"",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -146,7 +146,7 @@ public class SpeechRecognitionService
                 CreateNoWindow = true
             };
 
-            _logger.LogInformation("🐍 Running: python3 {Args}", processStartInfo.Arguments);
+            _logger.LogInformation("🐍 Running: {Python} {Args}", processStartInfo.FileName, processStartInfo.Arguments);
 
             using var process = Process.Start(processStartInfo);
             if (process == null)

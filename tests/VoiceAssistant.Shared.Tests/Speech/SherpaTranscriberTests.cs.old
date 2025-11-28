@@ -1,0 +1,117 @@
+using FluentAssertions;
+using Microsoft.Extensions.Logging;
+using Moq;
+using Olbrasoft.VoiceAssistant.Shared.Speech;
+
+namespace VoiceAssistant.Shared.Tests.Speech;
+
+public class SherpaTranscriberTests
+{
+    private readonly Mock<ILogger<SherpaTranscriber>> _loggerMock;
+
+    public SherpaTranscriberTests()
+    {
+        _loggerMock = new Mock<ILogger<SherpaTranscriber>>();
+    }
+
+    [Fact]
+    public void Constructor_WithNullLogger_ThrowsArgumentNullException()
+    {
+        // Arrange & Act
+        Action act = () => new SherpaTranscriber(null!, "/path/to/model", "cs");
+
+        // Assert
+        act.Should().Throw<ArgumentNullException>()
+            .WithParameterName("logger");
+    }
+
+    [Fact]
+    public void Constructor_WithNullModelPath_ThrowsArgumentNullException()
+    {
+        // Arrange & Act
+        Action act = () => new SherpaTranscriber(_loggerMock.Object, null!, "cs");
+
+        // Assert
+        act.Should().Throw<ArgumentNullException>()
+            .WithParameterName("modelPath");
+    }
+
+    [Fact]
+    public void Constructor_WithNonExistentModelDirectory_ThrowsDirectoryNotFoundException()
+    {
+        // Arrange & Act
+        Action act = () => new SherpaTranscriber(_loggerMock.Object, "/nonexistent/model/dir", "cs");
+
+        // Assert
+        act.Should().Throw<DirectoryNotFoundException>()
+            .WithMessage("*Sherpa-ONNX model directory not found*");
+    }
+
+    [Fact]
+    public void Language_ReturnsConfiguredLanguage()
+    {
+        // Arrange
+        var tempModelDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+        Directory.CreateDirectory(tempModelDir);
+        try
+        {
+            var transcriber = new SherpaTranscriber(_loggerMock.Object, tempModelDir, "cs");
+
+            // Act
+            var language = transcriber.Language;
+
+            // Assert
+            language.Should().Be("cs");
+        }
+        finally
+        {
+            Directory.Delete(tempModelDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Dispose_CanBeCalledMultipleTimes()
+    {
+        // Arrange
+        var tempModelDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+        Directory.CreateDirectory(tempModelDir);
+        try
+        {
+            var transcriber = new SherpaTranscriber(_loggerMock.Object, tempModelDir, "cs");
+
+            // Act
+            transcriber.Dispose();
+            transcriber.Dispose(); // Should not throw
+
+            // Assert
+            // No exception should be thrown
+        }
+        finally
+        {
+            Directory.Delete(tempModelDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task TranscribeAsync_AfterDispose_ThrowsObjectDisposedException()
+    {
+        // Arrange
+        var tempModelDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+        Directory.CreateDirectory(tempModelDir);
+        try
+        {
+            var transcriber = new SherpaTranscriber(_loggerMock.Object, tempModelDir, "cs");
+            transcriber.Dispose();
+
+            // Act
+            Func<Task> act = async () => await transcriber.TranscribeAsync(Array.Empty<byte>());
+
+            // Assert
+            await act.Should().ThrowAsync<ObjectDisposedException>();
+        }
+        finally
+        {
+            Directory.Delete(tempModelDir, recursive: true);
+        }
+    }
+}

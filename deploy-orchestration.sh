@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# EdgeTTS Server - Automated Deployment Script
-# Deploys from: ~/Olbrasoft/VoiceAssistant/src/EdgeTtsWebSocketServer
-# Deploys to: ~/voice-assistant/edge-tts-server
-# Service: edge-tts-server.service (systemd)
-# This script builds, deploys, and verifies the EdgeTTS WebSocket Server
+# Orchestration Service - Automated Deployment Script
+# Deploys from: ~/Olbrasoft/VoiceAssistant/src/Orchestration
+# Deploys to: ~/voice-assistant/orchestration
+# Service: orchestration.service (systemd)
+# This script builds, deploys, and verifies the Orchestration Service
 
 set -e  # Exit on any error
 
@@ -16,12 +16,12 @@ NC='\033[0m' # No Color
 
 # Configuration
 PROJECT_ROOT="$HOME/Olbrasoft/VoiceAssistant"
-SERVICE_PROJECT="$PROJECT_ROOT/src/EdgeTtsWebSocketServer/EdgeTtsWebSocketServer.csproj"
-DEPLOY_TARGET="$HOME/voice-assistant/edge-tts-server"
-SERVICE_NAME="edge-tts-server.service"
+SERVICE_PROJECT="$PROJECT_ROOT/src/Orchestration/Orchestration.csproj"
+DEPLOY_TARGET="$HOME/voice-assistant/orchestration"
+SERVICE_NAME="orchestration.service"
 
 echo -e "${GREEN}=====================================${NC}"
-echo -e "${GREEN}EdgeTTS Server Deployment${NC}"
+echo -e "${GREEN}Orchestration Service Deployment${NC}"
 echo -e "${GREEN}=====================================${NC}"
 echo ""
 
@@ -59,20 +59,8 @@ else
 fi
 echo ""
 
-# Step 4: Test HTTP endpoint
-echo -e "${YELLOW}Step 4: Testing HTTP endpoint...${NC}"
-HTTP_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5555/health)
-
-if [ "$HTTP_RESPONSE" = "200" ]; then
-    echo -e "${GREEN}✓ HTTP endpoint responding (Status: $HTTP_RESPONSE)${NC}"
-else
-    echo -e "${RED}✗ HTTP endpoint not responding (Status: $HTTP_RESPONSE)${NC}"
-    exit 1
-fi
-echo ""
-
-# Step 5: Display service status
-echo -e "${YELLOW}Step 5: Current service status:${NC}"
+# Step 4: Display service status
+echo -e "${YELLOW}Step 4: Current service status:${NC}"
 systemctl --user status "$SERVICE_NAME" --no-pager -l | head -15
 echo ""
 
@@ -80,10 +68,6 @@ echo ""
 echo -e "${GREEN}=====================================${NC}"
 echo -e "${GREEN}Deployment completed successfully!${NC}"
 echo -e "${GREEN}=====================================${NC}"
-echo ""
-echo "Service endpoints:"
-echo "  - Health:  http://localhost:5555/health"
-echo "  - TTS API: POST http://localhost:5555/api/speech"
 echo ""
 echo "Management commands:"
 echo "  - Status:  systemctl --user status $SERVICE_NAME"

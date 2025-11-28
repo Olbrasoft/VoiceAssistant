@@ -19,4 +19,10 @@ public interface IOrchestrator
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Task representing the asynchronous operation.</returns>
     Task StopAsync(CancellationToken cancellationToken);
+    
+    /// <summary>
+    /// Manually triggers voice dictation (same as wake word detection).
+    /// </summary>
+    /// <returns>Task representing the asynchronous operation.</returns>
+    Task TriggerDictationAsync();
 }

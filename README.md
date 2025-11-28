@@ -1,10 +1,29 @@
 # VoiceAssistant
 
-Voice assistant platform with wake word detection and orchestration for voice-controlled interactions.
+Voice assistant platform with push-to-talk dictation, wake word detection, and orchestration.
 
 ## Projects
 
-### 1. WakeWordDetection
+### 1. PushToTalkDictation
+Push-to-talk dictation service using Caps Lock key with GPU-accelerated Whisper.
+
+**Technology:** .NET 10, ONNX Runtime, CUDA GPU, ALSA audio
+
+**Features:**
+- Hold Caps Lock to record, release to transcribe
+- Custom ONNX Whisper implementation with CUDA GPU
+- Supports small/medium Whisper models
+- Chunking for audio longer than 30 seconds
+- Czech language optimized
+
+**Location:** `src/PushToTalkDictation/`, `src/PushToTalkDictation.Service/`
+
+**Key files:**
+- `VoiceAssistant.Shared/Speech/OnnxWhisperTranscriber.cs` - ONNX Whisper with GPU
+- `VoiceAssistant.Shared/Speech/AudioPreprocessor.cs` - Mel spectrogram
+- `VoiceAssistant.Shared/Speech/TokenDecoder.cs` - BPE token decoder
+
+### 2. WakeWordDetection
 Offline wake word detection service using OpenWakeWord and ONNX models.
 
 **Technology:** .NET 10, ASP.NET Core, SignalR WebSocket, ALSA audio
@@ -17,63 +36,88 @@ Offline wake word detection service using OpenWakeWord and ONNX models.
 
 **Location:** `src/WakeWordDetection/`, `src/WakeWordDetection.Service/`
 
-### 2. Orchestration
-Voice assistant orchestrator that coordinates wake word detection, audio responses, and voice processing.
+### 3. Orchestration
+Voice assistant orchestrator that coordinates wake word detection and audio responses.
 
-**Technology:** .NET 10 Worker Service, SignalR Client, NAudio
+**Technology:** .NET 10 Worker Service, SignalR Client
 
-**Features (Phase 1):**
+**Features:**
 - Connects to WakeWordDetection via SignalR WebSocket
-- Plays wake-word specific audio responses:
-  - `hey_jarvis` → Male voice ("Ano" - Czech)
-  - `alexa` → Female voice ("Yes" - English)
-
-**Future phases:** Voice recording, STT integration, AI command processing
+- Plays wake-word specific audio responses
 
 **Location:** `src/Orchestration/`
+
+### 4. EdgeTtsWebSocketServer
+Text-to-Speech server using Microsoft Edge TTS.
+
+**Technology:** .NET 10, WebSocket
+
+**Location:** `src/EdgeTtsWebSocketServer/`
 
 ## Structure
 
 ```
 VoiceAssistant/
 ├── src/
-│   ├── WakeWordDetection/              # Core wake word detection library
-│   ├── WakeWordDetection.Service/      # ASP.NET Core service with SignalR
-│   └── Orchestration/                   # Voice assistant orchestrator
+│   ├── VoiceAssistant.Shared/           # Shared library (ONNX Whisper, etc.)
+│   │   └── Speech/
+│   │       ├── OnnxWhisperTranscriber.cs
+│   │       ├── AudioPreprocessor.cs
+│   │       └── TokenDecoder.cs
+│   ├── PushToTalkDictation/             # Push-to-talk core library
+│   ├── PushToTalkDictation.Service/     # Systemd service
+│   ├── WakeWordDetection/               # Wake word detection library
+│   ├── WakeWordDetection.Service/       # ASP.NET Core service
+│   ├── Orchestration/                   # Voice assistant orchestrator
+│   └── EdgeTtsWebSocketServer/          # TTS server
 ├── tests/
-│   ├── WakeWordDetection.Tests/        # Core library tests (5 tests)
-│   └── WakeWordDetection.Service.Tests/# Service tests (33 tests)
-├── assets/
-│   └── audio/                           # Audio response files
-│       ├── ano.mp3                      # Male Czech voice
-│       └── yes.mp3                      # Female English voice
-├── VoiceAssistant.sln                   # Solution file
-└── deploy.sh                            # Deployment script
+│   ├── VoiceAssistant.Shared.Tests/
+│   ├── WakeWordDetection.Tests/
+│   └── WakeWordDetection.Service.Tests/
+└── VoiceAssistant.sln
 ```
 
-## Build & Test
+## Build & Deploy
+
+### PushToTalkDictation
 
 ```bash
-# Build entire solution
-dotnet build
+# Build
+dotnet build src/PushToTalkDictation.Service/PushToTalkDictation.Service.csproj -c Release
 
-# Run all tests (38 tests)
-dotnet test
+# Publish
+dotnet publish src/PushToTalkDictation.Service/PushToTalkDictation.Service.csproj \
+  -c Release -o ~/voice-assistant/push-to-talk-dictation/
 
-# Run specific project
-cd src/WakeWordDetection.Service && dotnet run
-cd src/Orchestration && dotnet run
+# Restart service
+systemctl --user restart push-to-talk-dictation
+
+# Check logs
+journalctl --user -u push-to-talk-dictation -f
 ```
 
-## Deployment
+### WakeWordDetection
 
 ```bash
-# Deploy WakeWordDetection service
 ./deploy.sh
-
 # Service runs on port 5000
 # WebSocket: ws://localhost:5000/hubs/wakeword
 ```
+
+## Models
+
+**Whisper models location:** `~/voice-assistant/push-to-talk-dictation/models/`
+
+| Model | Speed | Quality |
+|-------|-------|---------|
+| sherpa-onnx-whisper-small | ~1s/chunk | Good |
+| sherpa-onnx-whisper-medium | ~5-7s/chunk | Better |
+
+## Requirements
+
+- .NET 10 SDK
+- NVIDIA GPU with CUDA support
+- ALSA audio system (Linux)
 
 ## Development
 
@@ -85,31 +129,6 @@ cd src/Orchestration && dotnet run
 - `_camelCase` for private fields  
 - File-scoped namespaces
 - Nullable reference types enabled
-- XML documentation for public APIs
-
-**Testing:** xUnit + Moq, Arrange-Act-Assert pattern
-
-## Requirements
-
-- .NET 10 SDK
-- ALSA audio system (Linux)
-- Audio output device for orchestration
-
-## Workflow
-
-```
-User says "Hey Jarvis"
-    ↓
-WakeWordDetection (port 5000) detects wake word
-    ↓
-SignalR broadcasts WakeWordDetected event
-    ↓
-Orchestration receives event
-    ↓
-Plays "Ano" (male voice)
-    ↓
-[Future: Records voice → STT → AI processing]
-```
 
 ## License
 

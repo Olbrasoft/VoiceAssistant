@@ -1,14 +1,21 @@
+using Microsoft.AspNetCore.Builder;
 using Olbrasoft.VoiceAssistant.Orchestration;
 using Olbrasoft.VoiceAssistant.Orchestration.Services;
 
-var builder = Host.CreateApplicationBuilder(args);
+var builder = WebApplication.CreateBuilder(args);
 
 // Register services
-builder.Services.AddSingleton<AudioResponsePlayer>();
 builder.Services.AddSingleton<SpeechRecognitionService>();
 builder.Services.AddSingleton<TextInputService>();
 builder.Services.AddSingleton<IOrchestrator, Orchestrator>();
 builder.Services.AddHostedService<Worker>();
 
-var host = builder.Build();
-host.Run();
+// Add Web API support
+builder.Services.AddControllers();
+
+var app = builder.Build();
+
+// Configure HTTP pipeline
+app.MapControllers();
+
+app.Run();

@@ -1,7 +1,10 @@
 #!/bin/bash
 
-# WakeWord Listener - Automated Deployment Script
-# This script builds, tests, deploys, and verifies the WakeWord Listener service
+# Wake Word Detection - Automated Deployment Script
+# Deploys from: ~/Olbrasoft/VoiceAssistant/src/WakeWordDetection.Service
+# Deploys to: ~/voice-assistant/wake-word-detection
+# Service: wakeword-listener.service (systemd)
+# This script builds, tests, deploys, and verifies the Wake Word Detection service
 
 set -e  # Exit on any error
 
@@ -14,11 +17,11 @@ NC='\033[0m' # No Color
 # Configuration
 PROJECT_ROOT="$HOME/Olbrasoft/VoiceAssistant"
 SERVICE_PROJECT="$PROJECT_ROOT/src/WakeWordDetection.Service/WakeWordDetection.Service.csproj"
-DEPLOY_TARGET="$HOME/voice-assistant/wakeword-listener"
+DEPLOY_TARGET="$HOME/voice-assistant/wake-word-detection"
 SERVICE_NAME="wakeword-listener.service"
 
 echo -e "${GREEN}=====================================${NC}"
-echo -e "${GREEN}WakeWord Listener Deployment${NC}"
+echo -e "${GREEN}Wake Word Detection Deployment${NC}"
 echo -e "${GREEN}=====================================${NC}"
 echo ""
 

@@ -1,0 +1,114 @@
+using FluentAssertions;
+using Microsoft.Extensions.Logging;
+using Moq;
+using Olbrasoft.VoiceAssistant.Shared.Speech;
+
+namespace VoiceAssistant.Shared.Tests.Speech;
+
+public class WhisperTranscriberTests
+{
+    private readonly Mock<ILogger<WhisperTranscriber>> _loggerMock;
+
+    public WhisperTranscriberTests()
+    {
+        _loggerMock = new Mock<ILogger<WhisperTranscriber>>();
+    }
+
+    [Fact]
+    public void Constructor_WithNullLogger_ThrowsArgumentNullException()
+    {
+        // Arrange & Act
+        Action act = () => new WhisperTranscriber(null!, "model.bin", "cs");
+
+        // Assert
+        act.Should().Throw<ArgumentNullException>()
+            .WithParameterName("logger");
+    }
+
+    [Fact]
+    public void Constructor_WithNullModelPath_ThrowsArgumentNullException()
+    {
+        // Arrange & Act
+        Action act = () => new WhisperTranscriber(_loggerMock.Object, null!, "cs");
+
+        // Assert
+        act.Should().Throw<ArgumentNullException>()
+            .WithParameterName("modelPath");
+    }
+
+    [Fact]
+    public void Constructor_WithNonExistentModel_ThrowsFileNotFoundException()
+    {
+        // Arrange & Act
+        Action act = () => new WhisperTranscriber(_loggerMock.Object, "/nonexistent/model.bin", "cs");
+
+        // Assert
+        act.Should().Throw<FileNotFoundException>()
+            .WithMessage("*Whisper model not found*");
+    }
+
+    [Fact]
+    public void Language_ReturnsConfiguredLanguage()
+    {
+        // Arrange
+        var tempModelPath = Path.GetTempFileName();
+        try
+        {
+            var transcriber = new WhisperTranscriber(_loggerMock.Object, tempModelPath, "cs");
+
+            // Act
+            var language = transcriber.Language;
+
+            // Assert
+            language.Should().Be("cs");
+        }
+        finally
+        {
+            File.Delete(tempModelPath);
+        }
+    }
+
+    [Fact]
+    public void Dispose_CanBeCalledMultipleTimes()
+    {
+        // Arrange
+        var tempModelPath = Path.GetTempFileName();
+        try
+        {
+            var transcriber = new WhisperTranscriber(_loggerMock.Object, tempModelPath, "cs");
+
+            // Act
+            transcriber.Dispose();
+            transcriber.Dispose(); // Should not throw
+
+            // Assert
+            // No exception should be thrown
+        }
+        finally
+        {
+            File.Delete(tempModelPath);
+        }
+    }
+
+    [Fact]
+    public async Task TranscribeAsync_AfterDispose_ThrowsObjectDisposedException()
+    {
+        // Arrange
+        var tempModelPath = Path.GetTempFileName();
+        try
+        {
+            var transcriber = new WhisperTranscriber(_loggerMock.Object, tempModelPath, "cs");
+            transcriber.Dispose();
+
+            // Act
+            Func<Task> act = async () => await transcriber.TranscribeAsync(Array.Empty<byte>());
+
+            // Assert
+            await act.Should().ThrowAsync<ObjectDisposedException>();
+        }
+        finally
+        {
+            File.Delete(tempModelPath);
+        }
+    }
+}

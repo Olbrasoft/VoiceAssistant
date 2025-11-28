@@ -1,0 +1,21 @@
+[Unit]
+Description=Push-to-Talk Dictation Service
+After=graphical-session.target
+
+[Service]
+Type=simple
+Environment=DISPLAY=:1
+Environment=XAUTHORITY=/run/user/1000/gdm/Xauthority
+WorkingDirectory=/home/jirka/voice-assistant/push-to-talk-dictation
+ExecStart=/home/jirka/.dotnet/dotnet /home/jirka/voice-assistant/push-to-talk-dictation/PushToTalkDictation.Service.dll
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Permissions for /dev/input/eventX access
+# User must be in 'input' group: sudo usermod -a -G input jirka
+SupplementaryGroups=input
+
+[Install]
+WantedBy=default.target

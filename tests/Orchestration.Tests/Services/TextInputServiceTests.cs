@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Olbrasoft.VoiceAssistant.Orchestration.Services;
@@ -8,12 +9,15 @@ namespace Orchestration.Tests.Services;
 public class TextInputServiceTests
 {
     private readonly Mock<ILogger<TextInputService>> _loggerMock;
+    private readonly Mock<IConfiguration> _configurationMock;
     private readonly TextInputService _service;
 
     public TextInputServiceTests()
     {
         _loggerMock = new Mock<ILogger<TextInputService>>();
-        _service = new TextInputService(_loggerMock.Object);
+        _configurationMock = new Mock<IConfiguration>();
+        _configurationMock.Setup(x => x["OpenCodeUrl"]).Returns("http://localhost:4096");
+        _service = new TextInputService(_loggerMock.Object, _configurationMock.Object);
     }
 
     [Fact]
@@ -78,12 +82,12 @@ public class TextInputServiceTests
         // Act
         await _service.TypeTextAsync(text);
 
-        // Assert - verify logging happened
+        // Assert - verify logging happened (check for TypeTextAsync call)
         _loggerMock.Verify(
             x => x.Log(
                 LogLevel.Information,
                 It.IsAny<EventId>(),
-                It.Is<It.IsAnyType>((v, t) => v.ToString()!.Contains("Typing text")),
+                It.Is<It.IsAnyType>((v, t) => v.ToString()!.Contains("TypeTextAsync called")),
                 It.IsAny<Exception>(),
                 It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
             Times.AtLeastOnce);

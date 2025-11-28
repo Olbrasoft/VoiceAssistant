@@ -11,7 +11,6 @@ namespace Olbrasoft.VoiceAssistant.Orchestration;
 public class Orchestrator : IOrchestrator
 {
     private readonly ILogger<Orchestrator> _logger;
-    private readonly AudioResponsePlayer _audioPlayer;
     private readonly SpeechRecognitionService _speechRecognition;
     private readonly TextInputService _textInput;
     private readonly IConfiguration _configuration;
@@ -23,13 +22,11 @@ public class Orchestrator : IOrchestrator
 
     public Orchestrator(
         ILogger<Orchestrator> logger,
-        AudioResponsePlayer audioPlayer,
         SpeechRecognitionService speechRecognition,
         TextInputService textInput,
         IConfiguration configuration)
     {
         _logger = logger;
-        _audioPlayer = audioPlayer;
         _speechRecognition = speechRecognition;
         _textInput = textInput;
         _configuration = configuration;
@@ -93,28 +90,26 @@ public class Orchestrator : IOrchestrator
     }
 
     /// <summary>
-    /// Event handler for WakeWordDetected SignalR event.
-    /// Plays audio response, records speech, transcribes, and types text.
-    /// Uses atomic flag + semaphore lock + debouncing to prevent concurrent/duplicate execution.
+    /// Manually triggers voice dictation workflow (same as wake word detection).
+    /// Can be called by API endpoints or other external triggers.
     /// </summary>
-    private async void OnWakeWordDetected(WakeWordEvent wakeWordEvent)
+    public async Task TriggerDictationAsync()
     {
-        var eventId = Guid.NewGuid().ToString("N").Substring(0, 8);
-        _logger.LogInformation("🔔 [Event {EventId}] Wake word event received: {Word}", eventId, wakeWordEvent.Word);
-
-        // ATOMIC CHECK: Prevent multiple async void calls from even starting
+        _logger.LogInformation("🎤 Manual dictation triggered via API");
+        
+        // ATOMIC CHECK: Prevent multiple async calls from even starting
         if (Interlocked.CompareExchange(ref _isProcessing, 1, 0) != 0)
         {
-            _logger.LogWarning("⚠️  [Event {EventId}] Wake word REJECTED - another event is being processed (atomic)", eventId);
+            _logger.LogWarning("Dictation already in progress, ignoring trigger");
             return;
         }
 
         try
         {
-            // FIRST: Prevent concurrent wake word handling (get lock immediately)
+            // FIRST: Prevent concurrent workflow handling (get lock immediately)
             if (!await _workflowLock.WaitAsync(0))
             {
-                _logger.LogWarning("⚠️  [Event {EventId}] Wake word ignored - workflow already in progress", eventId);
+                _logger.LogWarning("Workflow lock already acquired, ignoring trigger");
                 return;
             }
 
@@ -125,88 +120,193 @@ public class Orchestrator : IOrchestrator
                 // SECOND: Debouncing inside the lock (prevents race condition)
                 if (now - _lastWakeWordTime < _debounceInterval)
                 {
-                    _logger.LogWarning("⚠️  [Event {EventId}] Wake word ignored - debounced (too soon after previous: {TimeSinceLast:F1}s)",
-                        eventId, (now - _lastWakeWordTime).TotalSeconds);
+                    _logger.LogInformation("Debounce interval not elapsed, ignoring trigger");
                     return;
                 }
 
-                _lastWakeWordTime = now; // Update timestamp INSIDE lock
-                _logger.LogInformation("🎤 [Event {EventId}] Wake word ACCEPTED: {Word}", eventId, wakeWordEvent.Word);
+                _lastWakeWordTime = now;
 
-                // 1. Play audio confirmation ("Ano" / "Yes")
-                var audioFile = GetAudioFileForWakeWord(wakeWordEvent.Word);
-
-                if (!string.IsNullOrEmpty(audioFile))
+                // 1. Play "Ano, poslouchám" audio confirmation
+                try
                 {
-                    _logger.LogInformation("🔊 [Event {EventId}] About to play audio: {File}", eventId, audioFile);
-                    await _audioPlayer.PlayAsync(audioFile);
-                    _logger.LogInformation("✅ [Event {EventId}] Audio playback completed", eventId);
-
-                    // Wait for audio to finish and echo to clear (2500ms delay to prevent microphone capturing audio response)
-                    await Task.Delay(2500);
+                    var audioFile = "/home/jirka/Olbrasoft/VoiceAssistant/assets/audio/ano-posloucham.mp3";
+                    var processStartInfo = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "ffplay",
+                        Arguments = $"-nodisp -autoexit -loglevel quiet \"{audioFile}\"",
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+                    
+                    using var process = System.Diagnostics.Process.Start(processStartInfo);
+                    if (process != null)
+                    {
+                        await process.WaitForExitAsync();
+                    }
+                    
+                    // Wait for audio echo to clear
+                    await Task.Delay(500);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to play audio confirmation");
                 }
 
                 // 2. Record audio and transcribe to text
-                _logger.LogInformation("🎤 Starting speech recognition...");
                 var transcribedText = await _speechRecognition.RecordAndTranscribeAsync();
 
                 if (string.IsNullOrWhiteSpace(transcribedText))
                 {
-                    _logger.LogWarning("⚠️  No text transcribed, skipping typing");
+                    _logger.LogInformation("No speech detected or transcription failed");
                     return;
                 }
 
-                // 3. Type the transcribed text into focused window
-                _logger.LogInformation("⌨️  Typing transcribed text...");
-                var success = await _textInput.TypeTextAsync(transcribedText);
+                // 3. Type the transcribed text into focused window (or send to OpenCode)
+                var autoSubmit = _configuration.GetValue<bool>("OpenCodeAutoSubmit", true);
+                var success = await _textInput.TypeTextAsync(transcribedText, autoSubmit);
 
                 if (success)
                 {
-                    _logger.LogInformation("✅ Speech-to-text workflow completed successfully");
-                }
-                else
-                {
-                    _logger.LogWarning("⚠️  Failed to type transcribed text");
+                    _logger.LogInformation("✅ Manual dictation workflow completed");
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ [Event {EventId}] Error handling wake word event", eventId);
+                _logger.LogError(ex, "Error in manual dictation workflow");
+                throw; // Re-throw for API error handling
             }
             finally
             {
-                // Release the semaphore lock
                 _workflowLock.Release();
-                _logger.LogInformation("🔓 [Event {EventId}] Workflow lock released", eventId);
             }
         }
         finally
         {
-            // ALWAYS release the atomic flag
             Interlocked.Exchange(ref _isProcessing, 0);
-            _logger.LogInformation("🔓 [Event {EventId}] Processing flag released", eventId);
         }
     }
 
     /// <summary>
-    /// Maps wake word to appropriate audio response file.
+    /// Event handler for WakeWordDetected SignalR event.
+    /// Plays audio response, records speech, transcribes, and types text.
+    /// Uses atomic flag + semaphore lock + debouncing to prevent concurrent/duplicate execution.
     /// </summary>
-    /// <param name="wakeWord">Detected wake word (e.g., "hey_jarvis_v0.1_t0.35").</param>
-    /// <returns>Audio file name.</returns>
-    private string GetAudioFileForWakeWord(string wakeWord)
+    private async void OnWakeWordDetected(WakeWordEvent wakeWordEvent)
     {
-        // Check if wake word contains "jarvis" -> male voice
+        _logger.LogInformation("🔔 Wake word detected: {Word}", wakeWordEvent.Word);
+
+        // ATOMIC CHECK: Prevent multiple async void calls from even starting
+        if (Interlocked.CompareExchange(ref _isProcessing, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            // FIRST: Prevent concurrent wake word handling (get lock immediately)
+            if (!await _workflowLock.WaitAsync(0))
+            {
+                return;
+            }
+
+            try
+            {
+                var now = DateTime.UtcNow;
+
+                // SECOND: Debouncing inside the lock (prevents race condition)
+                if (now - _lastWakeWordTime < _debounceInterval)
+                {
+                    return;
+                }
+
+                _lastWakeWordTime = now;
+
+                // 1. Play "Ano, poslouchám" audio confirmation
+                try
+                {
+                    var audioFile = "/home/jirka/Olbrasoft/VoiceAssistant/assets/audio/ano-posloucham.mp3";
+                    var processStartInfo = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "ffplay",
+                        Arguments = $"-nodisp -autoexit -loglevel quiet \"{audioFile}\"",
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+                    
+                    using var process = System.Diagnostics.Process.Start(processStartInfo);
+                    if (process != null)
+                    {
+                        await process.WaitForExitAsync();
+                    }
+                    
+                    // Wait for audio echo to clear
+                    await Task.Delay(500);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to play audio confirmation");
+                }
+
+                // 2. Record audio and transcribe to text
+                var transcribedText = await _speechRecognition.RecordAndTranscribeAsync();
+
+                if (string.IsNullOrWhiteSpace(transcribedText))
+                {
+                    return;
+                }
+
+                // 3. Type the transcribed text into focused window (or send to OpenCode)
+                var autoSubmit = _configuration.GetValue<bool>("OpenCodeAutoSubmit", true);
+                var success = await _textInput.TypeTextAsync(transcribedText, autoSubmit);
+
+                if (success)
+                {
+                    _logger.LogInformation("✅ Workflow completed");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error handling wake word event");
+            }
+            finally
+            {
+                _workflowLock.Release();
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _isProcessing, 0);
+        }
+    }
+
+    /// <summary>
+    /// Extracts friendly wake word name from detection string.
+    /// </summary>
+    /// <param name="wakeWord">Detected wake word (e.g., "hey_jarvis_v0.1_t0.5").</param>
+    /// <returns>Friendly wake word name.</returns>
+    private string GetWakeWordName(string wakeWord)
+    {
         if (wakeWord.Contains("jarvis", StringComparison.OrdinalIgnoreCase))
         {
-            return "ano.mp3";  // Male voice: "Ano" (Yes)
+            return "Jarvis";
         }
 
-        // Check if wake word contains "alexa" -> female voice
         if (wakeWord.Contains("alexa", StringComparison.OrdinalIgnoreCase))
         {
-            return "yes.mp3";  // Female voice: "Yes"
+            return "Alexa";
         }
 
-        return string.Empty;
+        if (wakeWord.Contains("mycroft", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Mycroft";
+        }
+
+        if (wakeWord.Contains("rhasspy", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Rhasspy";
+        }
+
+        // Return the original if no match
+        return wakeWord;
     }
 }

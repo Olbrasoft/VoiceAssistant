@@ -1,0 +1,201 @@
+using Microsoft.Extensions.Logging;
+using SherpaOnnx;
+
+namespace Olbrasoft.VoiceAssistant.Shared.Speech;
+
+/// <summary>
+/// Sherpa-ONNX based speech transcriber for robust CUDA support.
+/// </summary>
+public class SherpaTranscriber : ISpeechTranscriber
+{
+    private readonly ILogger<SherpaTranscriber> _logger;
+    private readonly string _modelPath;
+    private readonly string _language;
+    private OfflineRecognizer? _recognizer;
+    private bool _disposed;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="SherpaTranscriber"/> class.
+    /// </summary>
+    /// <param name="logger">Logger instance.</param>
+    /// <param name="modelPath">Path to sherpa-onnx model directory.</param>
+    /// <param name="language">Language code (e.g., "cs" for Czech, "en" for English).</param>
+    public SherpaTranscriber(ILogger<SherpaTranscriber> logger, string modelPath, string language = "cs")
+    {
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _modelPath = modelPath ?? throw new ArgumentNullException(nameof(modelPath));
+        _language = language ?? throw new ArgumentNullException(nameof(language));
+
+        if (!Directory.Exists(_modelPath))
+        {
+            throw new DirectoryNotFoundException($"Sherpa-ONNX model directory not found: {_modelPath}");
+        }
+    }
+
+    /// <inheritdoc/>
+    public string Language => _language;
+
+    /// <summary>
+    /// Initializes the Sherpa-ONNX recognizer (lazy initialization).
+    /// </summary>
+    private void Initialize()
+    {
+        if (_recognizer != null)
+            return;
+
+        try
+        {
+            _logger.LogInformation("Loading Sherpa-ONNX model from: {ModelPath}", _modelPath);
+
+            // Configure Whisper model
+            var whisperConfig = new OfflineWhisperModelConfig
+            {
+                Encoder = Path.Combine(_modelPath, "medium-encoder.onnx"),
+                Decoder = Path.Combine(_modelPath, "medium-decoder.onnx")
+            };
+
+            // Configure model settings
+            var modelConfig = new OfflineModelConfig
+            {
+                Whisper = whisperConfig,
+                Tokens = Path.Combine(_modelPath, "medium-tokens.txt"),
+                Provider = "cuda",  // Use CUDA for GPU acceleration
+                NumThreads = 4,
+                Debug = 1  // Enable debug logging
+            };
+
+            // Create recognizer configuration
+            var config = new OfflineRecognizerConfig
+            {
+                ModelConfig = modelConfig
+            };
+
+            // Initialize recognizer
+            _recognizer = new OfflineRecognizer(config);
+
+            _logger.LogInformation("Sherpa-ONNX model loaded successfully with CUDA support");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to load Sherpa-ONNX model");
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Converts PCM byte array to float32 samples normalized to [-1.0, 1.0].
+    /// </summary>
+    /// <param name="pcmData">Raw PCM audio data (16-bit signed integers).</param>
+    /// <returns>Array of normalized float32 samples in range [-1.0, 1.0].</returns>
+    private static float[] ConvertPcmToFloat32(byte[] pcmData)
+    {
+        var samples = new float[pcmData.Length / 2];
+        for (int i = 0; i < samples.Length; i++)
+        {
+            short sample = BitConverter.ToInt16(pcmData, i * 2);
+            samples[i] = sample / 32768.0f; // Normalize int16 to float32
+        }
+        return samples;
+    }
+
+    /// <summary>
+    /// Strips WAV header if present (first 44 bytes).
+    /// </summary>
+    /// <param name="audioData">Audio data that may contain WAV header.</param>
+    /// <returns>Raw PCM audio data without WAV header.</returns>
+    private static byte[] StripWavHeader(byte[] audioData)
+    {
+        // Check for WAV header (RIFF)
+        if (audioData.Length > 44 &&
+            audioData[0] == 'R' && audioData[1] == 'I' &&
+            audioData[2] == 'F' && audioData[3] == 'F')
+        {
+            var pcmData = new byte[audioData.Length - 44];
+            Array.Copy(audioData, 44, pcmData, 0, pcmData.Length);
+            return pcmData;
+        }
+        return audioData;
+    }
+
+    /// <inheritdoc/>
+    public async Task<TranscriptionResult> TranscribeAsync(byte[] audioData, CancellationToken cancellationToken = default)
+    {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(SherpaTranscriber));
+
+        try
+        {
+            Initialize();
+
+            _logger.LogDebug("Starting transcription... (audio size: {Size} bytes)", audioData.Length);
+
+            // Strip WAV header if present
+            var pcmData = StripWavHeader(audioData);
+
+            // Convert PCM to float32 samples
+            var samples = ConvertPcmToFloat32(pcmData);
+
+            // Sherpa-ONNX expects 16kHz mono audio
+            const int sampleRate = 16000;
+
+            // Create offline stream
+            var stream = _recognizer!.CreateStream();
+
+            // Accept waveform (samples, sample_rate)
+            stream.AcceptWaveform(sampleRate, samples);
+
+            // Decode (run recognition)
+            _recognizer.Decode(stream);
+
+            // Get result
+            var result = stream.Result;
+            var transcription = result.Text?.Trim() ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(transcription))
+            {
+                _logger.LogWarning("Transcription result is empty");
+                return new TranscriptionResult("No speech detected");
+            }
+
+            // Sherpa-ONNX doesn't provide confidence scores directly
+            // We'll use 1.0 as placeholder for successful transcription
+            const float confidence = 1.0f;
+
+            _logger.LogInformation("Transcription successful: {Text}", transcription);
+
+            return new TranscriptionResult(transcription, confidence);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("Transcription was cancelled");
+            return new TranscriptionResult("Transcription cancelled");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Transcription failed");
+            return new TranscriptionResult($"Transcription error: {ex.Message}");
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task<TranscriptionResult> TranscribeAsync(Stream audioStream, CancellationToken cancellationToken = default)
+    {
+        using var memoryStream = new MemoryStream();
+        await audioStream.CopyToAsync(memoryStream, cancellationToken);
+        return await TranscribeAsync(memoryStream.ToArray(), cancellationToken);
+    }
+
+    /// <inheritdoc/>
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _recognizer?.Dispose();
+
+        _disposed = true;
+        GC.SuppressFinalize(this);
+
+        _logger.LogDebug("SherpaTranscriber disposed");
+    }
+}

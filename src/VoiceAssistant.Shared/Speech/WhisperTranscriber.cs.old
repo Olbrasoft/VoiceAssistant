@@ -1,0 +1,151 @@
+using Microsoft.Extensions.Logging;
+using Whisper.net;
+using Whisper.net.Ggml;
+
+namespace Olbrasoft.VoiceAssistant.Shared.Speech;
+
+/// <summary>
+/// Whisper-based speech transcriber using Whisper.net.
+/// </summary>
+public class WhisperTranscriber : ISpeechTranscriber
+{
+    private readonly ILogger<WhisperTranscriber> _logger;
+    private readonly string _modelPath;
+    private readonly string _language;
+    private WhisperFactory? _whisperFactory;
+    private WhisperProcessor? _processor;
+    private bool _disposed;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="WhisperTranscriber"/> class.
+    /// </summary>
+    /// <param name="logger">Logger instance.</param>
+    /// <param name="modelPath">Path to GGML Whisper model file.</param>
+    /// <param name="language">Language code (e.g., "cs" for Czech, "en" for English).</param>
+    public WhisperTranscriber(ILogger<WhisperTranscriber> logger, string modelPath, string language = "cs")
+    {
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _modelPath = modelPath ?? throw new ArgumentNullException(nameof(modelPath));
+        _language = language ?? throw new ArgumentNullException(nameof(language));
+
+        if (!File.Exists(_modelPath))
+        {
+            throw new FileNotFoundException($"Whisper model not found: {_modelPath}");
+        }
+    }
+
+    /// <inheritdoc/>
+    public string Language => _language;
+
+    /// <summary>
+    /// Initializes the Whisper model (lazy initialization).
+    /// </summary>
+    private async Task InitializeAsync()
+    {
+        if (_whisperFactory != null)
+            return;
+
+        try
+        {
+            _logger.LogInformation("Loading Whisper model: {ModelPath}", _modelPath);
+
+            // Create factory from model file with GPU (CUDA) support
+            _whisperFactory = WhisperFactory.FromPath(_modelPath);
+
+            // Create processor with language and GPU acceleration
+            _processor = _whisperFactory.CreateBuilder()
+                .WithLanguage(_language)
+                .WithPrompt("Transcribe the following Czech audio:")  // Context hint
+                .Build();
+
+            _logger.LogInformation("Whisper model loaded successfully with GPU acceleration");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to load Whisper model");
+            throw;
+        }
+
+        await Task.CompletedTask;
+    }
+
+    /// <inheritdoc/>
+    public async Task<TranscriptionResult> TranscribeAsync(byte[] audioData, CancellationToken cancellationToken = default)
+    {
+        using var memoryStream = new MemoryStream(audioData);
+        return await TranscribeAsync(memoryStream, cancellationToken);
+    }
+
+    /// <inheritdoc/>
+    public async Task<TranscriptionResult> TranscribeAsync(Stream audioStream, CancellationToken cancellationToken = default)
+    {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(WhisperTranscriber));
+
+        try
+        {
+            await InitializeAsync();
+
+            _logger.LogDebug("Starting transcription...");
+
+            var segments = new List<string>();
+            var avgProbability = 0f;
+            var segmentCount = 0;
+
+            // Process audio stream
+            await foreach (var result in _processor!.ProcessAsync(audioStream, cancellationToken))
+            {
+                var text = result.Text?.Trim();
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    segments.Add(text);
+                    avgProbability += result.Probability;
+                    segmentCount++;
+
+                    _logger.LogDebug("Segment: {Text} (probability: {Probability:F3})", text, result.Probability);
+                }
+            }
+
+            // Combine all segments
+            var transcription = string.Join(" ", segments).Trim();
+
+            // Calculate average confidence
+            var confidence = segmentCount > 0 ? avgProbability / segmentCount : 0f;
+
+            if (string.IsNullOrWhiteSpace(transcription))
+            {
+                _logger.LogWarning("Transcription result is empty");
+                return new TranscriptionResult("No speech detected");
+            }
+
+            _logger.LogInformation("Transcription successful: {Text} (confidence: {Confidence:F3})", transcription, confidence);
+
+            return new TranscriptionResult(transcription, confidence);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("Transcription was cancelled");
+            return new TranscriptionResult("Transcription cancelled");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Transcription failed");
+            return new TranscriptionResult($"Transcription error: {ex.Message}");
+        }
+    }
+
+    /// <inheritdoc/>
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _processor?.Dispose();
+        _whisperFactory?.Dispose();
+
+        _disposed = true;
+        GC.SuppressFinalize(this);
+
+        _logger.LogDebug("WhisperTranscriber disposed");
+    }
+}

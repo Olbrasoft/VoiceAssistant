@@ -33,7 +33,7 @@ except ImportError:
     sys.exit(1)
 
 # Configuration
-WHISPER_MODEL_SIZE = "medium"  # medium model for better accuracy
+WHISPER_MODEL_SIZE = "large-v3"  # large-v3 model for maximum accuracy
 WHISPER_LANGUAGE = "cs"  # Czech
 
 # Global model instance (cached)
@@ -49,10 +49,18 @@ def load_whisper_model():
             whisper_model = WhisperModel(
                 WHISPER_MODEL_SIZE, device="cuda", compute_type="float16"
             )
+            print(
+                f"🚀 Whisper loaded: device=CUDA, model={WHISPER_MODEL_SIZE}, compute_type=float16",
+                file=sys.stderr,
+            )
         except Exception as e:
             # Fallback to CPU
             whisper_model = WhisperModel(
                 WHISPER_MODEL_SIZE, device="cpu", compute_type="int8"
+            )
+            print(
+                f"⚠️ CUDA failed ({e}), using CPU: model={WHISPER_MODEL_SIZE}, compute_type=int8",
+                file=sys.stderr,
             )
     return whisper_model
 
