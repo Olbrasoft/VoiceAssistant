@@ -76,24 +76,8 @@ public class OrchestratorTests
         await orchestrator.StopAsync(CancellationToken.None);
     }
 
-    [Fact]
-    public async Task TriggerDictationAsync_WhenAlreadyProcessing_ShouldReturnImmediately()
-    {
-        // Arrange
-        var orchestrator = new Orchestrator(
-            _mockLogger.Object,
-            _mockSpeechRecognition.Object,
-            _mockTextInput.Object,
-            _mockConfiguration.Object);
-
-        // Act - trigger multiple times quickly
-        var task1 = orchestrator.TriggerDictationAsync();
-        var task2 = orchestrator.TriggerDictationAsync();
-        var task3 = orchestrator.TriggerDictationAsync();
-
-        // Should not throw
-        await Task.WhenAll(task1, task2, task3);
-    }
+    // NOTE: TriggerDictationAsync test removed - it plays audio and records from microphone,
+    // which is not suitable for automated testing
 
     [Fact]
     public void IOrchestrator_ShouldDefineRequiredMethods()
