@@ -4,6 +4,7 @@ using Olbrasoft.VoiceAssistant.PushToTalkDictation.Service.Hubs;
 using Olbrasoft.VoiceAssistant.PushToTalkDictation.Service.Services;
 using Olbrasoft.VoiceAssistant.Shared.Speech;
 using Olbrasoft.VoiceAssistant.Shared.TextInput;
+using VoiceAssistant.Data.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -54,6 +55,12 @@ builder.Services.AddSingleton<ITextTyper>(sp =>
     logger.LogInformation("Detected display server: {DisplayServer}", displayServer);
     return TextTyperFactory.Create(loggerFactory);
 });
+
+// HTTP client for TTS stop functionality
+builder.Services.AddHttpClient<DictationWorker>();
+
+// Register VoiceAssistant.Shared.Data (EF Core, Mediation handlers)
+builder.Services.AddVoiceAssistantData(builder.Configuration);
 
 // Register worker
 builder.Services.AddHostedService<DictationWorker>();

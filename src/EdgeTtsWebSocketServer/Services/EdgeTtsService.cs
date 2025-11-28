@@ -20,6 +20,10 @@ public class EdgeTtsService
     private readonly string _defaultVoice;
     private readonly string _defaultRate;
     private readonly ILogger<EdgeTtsService> _logger;
+    
+    // Current playback process for stop functionality
+    private Process? _currentPlaybackProcess;
+    private readonly object _processLock = new();
 
     public EdgeTtsService(IConfiguration configuration, ILogger<EdgeTtsService> logger)
     {
@@ -275,13 +279,52 @@ public class EdgeTtsService
                 }
             };
 
+            // Store reference for stop functionality
+            lock (_processLock)
+            {
+                _currentPlaybackProcess = process;
+            }
+
             process.Start();
             await process.WaitForExitAsync();
         }
         finally
         {
+            lock (_processLock)
+            {
+                _currentPlaybackProcess = null;
+            }
+            
             lockFile.Close();
             File.Delete(_speechLockFile);
+        }
+    }
+
+    /// <summary>
+    /// Stops current speech playback immediately.
+    /// </summary>
+    /// <returns>True if playback was stopped, false if nothing was playing.</returns>
+    public bool StopSpeaking()
+    {
+        lock (_processLock)
+        {
+            if (_currentPlaybackProcess == null || _currentPlaybackProcess.HasExited)
+            {
+                _logger.LogInformation("StopSpeaking: No active playback to stop");
+                return false;
+            }
+
+            try
+            {
+                _logger.LogInformation("StopSpeaking: Killing ffplay process {Pid}", _currentPlaybackProcess.Id);
+                _currentPlaybackProcess.Kill(entireProcessTree: true);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "StopSpeaking: Failed to kill process");
+                return false;
+            }
         }
     }
 

@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\PushToTalkDictation\PushToTalkDictation.csproj" />
+    <ProjectReference Include="..\VoiceAssistant.Data.EntityFrameworkCore\VoiceAssistant.Data.EntityFrameworkCore.csproj" />
   </ItemGroup>
 
 </Project>

@@ -54,4 +54,20 @@ public class SpeechController : ControllerBase
         var count = _edgeTtsService.ClearCache();
         return Ok(new { message = $"✅ Cleared {count} cached files" });
     }
+
+    /// <summary>
+    /// Stops current speech playback immediately.
+    /// </summary>
+    [HttpPost("stop")]
+    public ActionResult<object> Stop()
+    {
+        _logger.LogInformation("Stop speech request received");
+        var stopped = _edgeTtsService.StopSpeaking();
+        
+        return Ok(new { 
+            success = true, 
+            stopped = stopped,
+            message = stopped ? "✅ Speech stopped" : "ℹ️ Nothing was playing" 
+        });
+    }
 }

@@ -24,10 +24,11 @@ app.MapGet("/", () => new
 {
     service = "Edge TTS WebSocket Server",
     status = "running",
-    version = "1.0.0",
+    version = "1.1.0",
     endpoints = new[]
     {
         "POST /api/speech/speak - Convert text to speech",
+        "POST /api/speech/stop - Stop current playback",
         "DELETE /api/speech/cache - Clear cache"
     }
 });

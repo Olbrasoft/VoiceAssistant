@@ -1,8 +1,11 @@
 using Microsoft.Extensions.Configuration;
+using Olbrasoft.Mediation;
 using Olbrasoft.VoiceAssistant.PushToTalkDictation.Service.Services;
 using Olbrasoft.VoiceAssistant.Shared.Input;
 using Olbrasoft.VoiceAssistant.Shared.Speech;
 using Olbrasoft.VoiceAssistant.Shared.TextInput;
+using VoiceAssistant.Shared.Data.Commands;
+using VoiceAssistant.Shared.Data.Enums;
 
 namespace Olbrasoft.VoiceAssistant.PushToTalkDictation.Service;
 
@@ -20,9 +23,17 @@ public class DictationWorker : BackgroundService
     private readonly ISpeechTranscriber _speechTranscriber;
     private readonly ITextTyper _textTyper;
     private readonly IPttNotifier _pttNotifier;
+    private readonly IMediator _mediator;
+    private readonly HttpClient _httpClient;
     private bool _isRecording;
     private DateTime? _recordingStartTime;
     private KeyCode _triggerKey;
+    private readonly string _ttsBaseUrl;
+    
+    /// <summary>
+    /// Path to the speech lock file. When this file exists, TTS should not speak.
+    /// </summary>
+    private const string SpeechLockFilePath = "/tmp/speech-lock";
 
     public DictationWorker(
         ILogger<DictationWorker> logger,
@@ -31,7 +42,9 @@ public class DictationWorker : BackgroundService
         IAudioRecorder audioRecorder,
         ISpeechTranscriber speechTranscriber,
         ITextTyper textTyper,
-        IPttNotifier pttNotifier)
+        IPttNotifier pttNotifier,
+        IMediator mediator,
+        HttpClient httpClient)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
@@ -40,10 +53,13 @@ public class DictationWorker : BackgroundService
         _speechTranscriber = speechTranscriber ?? throw new ArgumentNullException(nameof(speechTranscriber));
         _textTyper = textTyper ?? throw new ArgumentNullException(nameof(textTyper));
         _pttNotifier = pttNotifier ?? throw new ArgumentNullException(nameof(pttNotifier));
+        _mediator = mediator ?? throw new ArgumentNullException(nameof(mediator));
+        _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
 
         // Load configuration
         var triggerKeyName = _configuration.GetValue<string>("PushToTalkDictation:TriggerKey", "CapsLock");
         _triggerKey = Enum.Parse<KeyCode>(triggerKeyName);
+        _ttsBaseUrl = _configuration.GetValue<string>("EdgeTts:BaseUrl", "http://localhost:5555");
 
         _logger.LogInformation("Dictation worker initialized. Trigger key: {TriggerKey}", _triggerKey);
     }
@@ -140,6 +156,12 @@ public class DictationWorker : BackgroundService
 
             _logger.LogInformation("Starting audio recording...");
             
+            // Stop any TTS speech immediately
+            await StopTtsSpeechAsync();
+            
+            // Create speech lock file to prevent TTS from speaking during recording
+            CreateSpeechLockFile();
+            
             // Notify clients about recording start
             await _pttNotifier.NotifyRecordingStartedAsync();
 
@@ -197,6 +219,12 @@ public class DictationWorker : BackgroundService
                     _logger.LogInformation("Transcription successful: {Text} (confidence: {Confidence:F3})", 
                         transcription.Text, transcription.Confidence);
 
+                    // Save transcription to history
+                    await SaveTranscriptionLogAsync(
+                        transcription.Text, 
+                        transcription.Confidence, 
+                        (int)(durationSeconds * 1000));
+
                     // Notify clients about successful transcription
                     await _pttNotifier.NotifyTranscriptionCompletedAsync(transcription.Text, transcription.Confidence);
 
@@ -228,6 +256,93 @@ public class DictationWorker : BackgroundService
         {
             _isRecording = false;
             _recordingStartTime = null;
+            
+            // Delete speech lock file to allow TTS to speak again
+            DeleteSpeechLockFile();
+        }
+    }
+    
+    /// <summary>
+    /// Creates the speech lock file to signal TTS to not speak.
+    /// </summary>
+    private void CreateSpeechLockFile()
+    {
+        try
+        {
+            File.WriteAllText(SpeechLockFilePath, DateTime.UtcNow.ToString("O"));
+            _logger.LogDebug("Speech lock file created: {Path}", SpeechLockFilePath);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to create speech lock file: {Path}", SpeechLockFilePath);
+        }
+    }
+    
+    /// <summary>
+    /// Deletes the speech lock file to allow TTS to speak again.
+    /// </summary>
+    private void DeleteSpeechLockFile()
+    {
+        try
+        {
+            if (File.Exists(SpeechLockFilePath))
+            {
+                File.Delete(SpeechLockFilePath);
+                _logger.LogDebug("Speech lock file deleted: {Path}", SpeechLockFilePath);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to delete speech lock file: {Path}", SpeechLockFilePath);
+        }
+    }
+
+    /// <summary>
+    /// Stops any currently playing TTS speech by calling the EdgeTTS server.
+    /// </summary>
+    private async Task StopTtsSpeechAsync()
+    {
+        try
+        {
+            var response = await _httpClient.PostAsync($"{_ttsBaseUrl}/api/speech/stop", null);
+            
+            if (response.IsSuccessStatusCode)
+            {
+                _logger.LogDebug("TTS speech stop request sent successfully");
+            }
+            else
+            {
+                _logger.LogWarning("TTS speech stop request failed: {StatusCode}", response.StatusCode);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to send TTS speech stop request");
+        }
+    }
+
+    /// <summary>
+    /// Saves transcription to the history log.
+    /// </summary>
+    private async Task SaveTranscriptionLogAsync(string text, float confidence, int durationMs)
+    {
+        try
+        {
+            var command = new TranscriptionLogSaveCommand
+            {
+                Text = text,
+                Confidence = confidence,
+                DurationMs = durationMs,
+                Source = TranscriptionSource.PushToTalk,
+                Language = "cs"  // Default to Czech - TODO: make configurable
+            };
+
+            var id = await _mediator.MediateAsync<int>(command);
+            _logger.LogDebug("Transcription saved to history with ID: {Id}", id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to save transcription to history");
         }
     }
 
