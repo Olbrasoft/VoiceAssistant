@@ -1,9 +1,13 @@
 using EdgeTtsWebSocketServer.Services;
+using VoiceAssistant.Data.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container
 builder.Services.AddControllers();
+
+// Register VoiceAssistant data services (DbContext, Mediator, CQRS handlers)
+builder.Services.AddVoiceAssistantData(builder.Configuration);
 
 // Register EdgeTtsService as singleton
 builder.Services.AddSingleton<EdgeTtsService>();

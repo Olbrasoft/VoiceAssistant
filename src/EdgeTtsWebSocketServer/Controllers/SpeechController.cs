@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
 using EdgeTtsWebSocketServer.Models;
 using EdgeTtsWebSocketServer.Services;
+using Olbrasoft.Mediation;
+using VoiceAssistant.Shared.Data.Queries.SpeechLockQueries;
 
 namespace EdgeTtsWebSocketServer.Controllers;
 
@@ -9,11 +11,13 @@ namespace EdgeTtsWebSocketServer.Controllers;
 public class SpeechController : ControllerBase
 {
     private readonly EdgeTtsService _edgeTtsService;
+    private readonly IMediator _mediator;
     private readonly ILogger<SpeechController> _logger;
 
-    public SpeechController(EdgeTtsService edgeTtsService, ILogger<SpeechController> logger)
+    public SpeechController(EdgeTtsService edgeTtsService, IMediator mediator, ILogger<SpeechController> logger)
     {
         _edgeTtsService = edgeTtsService;
+        _mediator = mediator;
         _logger = logger;
     }
 
@@ -69,5 +73,39 @@ public class SpeechController : ControllerBase
             stopped = stopped,
             message = stopped ? "✅ Speech stopped" : "ℹ️ Nothing was playing" 
         });
+    }
+
+    /// <summary>
+    /// Check if TTS can speak (no active speech lock).
+    /// Returns canSpeak=false if user is currently recording.
+    /// </summary>
+    [HttpGet("can-speak")]
+    public async Task<ActionResult<object>> CanSpeak()
+    {
+        try
+        {
+            var query = new SpeechLockExistsQuery { MaxAgeMinutes = 1 };
+            var isLocked = await _mediator.MediateAsync(query);
+            
+            _logger.LogDebug("CanSpeak check: isLocked={IsLocked}", isLocked);
+            
+            return Ok(new
+            {
+                canSpeak = !isLocked,
+                isLocked = isLocked,
+                message = isLocked ? "🔒 Speech locked - user is recording" : "✅ Ready to speak"
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error checking speech lock");
+            // On error, allow speaking (fail open)
+            return Ok(new
+            {
+                canSpeak = true,
+                isLocked = false,
+                message = "⚠️ Could not check lock, allowing speech"
+            });
+        }
     }
 }

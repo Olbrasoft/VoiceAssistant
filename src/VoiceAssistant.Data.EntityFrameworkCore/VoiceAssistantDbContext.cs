@@ -35,6 +35,11 @@ public class VoiceAssistantDbContext : DbContext
     /// </summary>
     public DbSet<SpeechLockEntity> SpeechLocks => Set<SpeechLockEntity>();
 
+    /// <summary>
+    /// Gets or sets the speech lock sources (lookup table).
+    /// </summary>
+    public DbSet<SpeechLockSourceEntity> SpeechLockSources => Set<SpeechLockSourceEntity>();
+
     public VoiceAssistantDbContext(DbContextOptions<VoiceAssistantDbContext> options) 
         : base(options)
     {
@@ -103,6 +108,27 @@ public class VoiceAssistantDbContext : DbContext
             entity.HasIndex(e => e.Name).IsUnique();
         });
 
+        // SpeechLockSource configuration (lookup table)
+        modelBuilder.Entity<SpeechLockSourceEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.Description).HasMaxLength(200);
+            entity.HasIndex(e => e.Name).IsUnique();
+
+            // Seed data from enum - single source of truth
+            entity.HasData(
+                Enum.GetValues<SpeechLockSource>()
+                    .Select(e => new SpeechLockSourceEntity
+                    {
+                        Id = (int)e,
+                        Name = e.ToString(),
+                        Description = e.GetDescription()
+                    })
+                    .ToArray()
+            );
+        });
+
         // SpeechLockEntity configuration
         modelBuilder.Entity<SpeechLockEntity>(entity =>
         {
@@ -110,7 +136,15 @@ public class VoiceAssistantDbContext : DbContext
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("datetime('now')")
                 .ValueGeneratedOnAdd();
+            entity.Property(e => e.Reason).HasMaxLength(100);
             entity.HasIndex(e => e.CreatedAt);
+            entity.HasIndex(e => e.SourceId);
+
+            // Foreign key to SpeechLockSource
+            entity.HasOne(e => e.Source)
+                  .WithMany(s => s.SpeechLocks)
+                  .HasForeignKey(e => e.SourceId)
+                  .OnDelete(DeleteBehavior.Restrict);
         });
     }
 }

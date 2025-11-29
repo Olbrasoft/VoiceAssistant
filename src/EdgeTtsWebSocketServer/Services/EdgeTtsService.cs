@@ -3,6 +3,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Diagnostics;
+using Olbrasoft.Mediation;
+using VoiceAssistant.Shared.Data.Queries.SpeechLockQueries;
 
 namespace EdgeTtsWebSocketServer.Services;
 
@@ -15,26 +17,46 @@ public class EdgeTtsService
     private const double S_TO_NS = 1e9;
     
     private readonly string _cacheDirectory;
-    private readonly string _micLockFile;
     private readonly string _speechLockFile;
     private readonly string _defaultVoice;
     private readonly string _defaultRate;
     private readonly ILogger<EdgeTtsService> _logger;
+    private readonly IServiceProvider _serviceProvider;
     
     // Current playback process for stop functionality
     private Process? _currentPlaybackProcess;
     private readonly object _processLock = new();
 
-    public EdgeTtsService(IConfiguration configuration, ILogger<EdgeTtsService> logger)
+    public EdgeTtsService(IConfiguration configuration, ILogger<EdgeTtsService> logger, IServiceProvider serviceProvider)
     {
         _logger = logger;
+        _serviceProvider = serviceProvider;
         _cacheDirectory = ExpandPath(configuration["EdgeTts:CacheDirectory"] ?? "~/.cache/edge-tts-server");
-        _micLockFile = configuration["EdgeTts:MicrophoneLockFile"] ?? "/tmp/microphone-active.lock";
         _speechLockFile = configuration["EdgeTts:SpeechLockFile"] ?? "/tmp/speech.lock";
         _defaultVoice = configuration["EdgeTts:DefaultVoice"] ?? "cs-CZ-AntoninNeural";
         _defaultRate = configuration["EdgeTts:DefaultRate"] ?? "+20%";
         
         Directory.CreateDirectory(_cacheDirectory);
+    }
+
+    /// <summary>
+    /// Check if speech is locked (user is recording).
+    /// </summary>
+    private async Task<bool> IsSpeechLockedAsync()
+    {
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
+            
+            var query = new SpeechLockExistsQuery { MaxAgeMinutes = 1 };
+            return await mediator.MediateAsync(query);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to check speech lock from DB, allowing speech");
+            return false; // Fail open - allow speech if DB check fails
+        }
     }
 
     public async Task<(bool success, string message, bool cached)> SpeakAsync(
@@ -47,11 +69,11 @@ public class EdgeTtsService
     {
         try
         {
-            // Check microphone lock
-            if (File.Exists(_micLockFile))
+            // Check speech lock from database
+            if (await IsSpeechLockedAsync())
             {
-                _logger.LogInformation("Microphone is active - skipping speech");
-                return (true, $"🎤 Microphone active - text only: {text}", false);
+                _logger.LogInformation("🔒 Speech locked (user recording) - skipping TTS: {Text}", text);
+                return (true, $"🔒 Speech locked - text only: {text}", false);
             }
 
             voice ??= _defaultVoice;

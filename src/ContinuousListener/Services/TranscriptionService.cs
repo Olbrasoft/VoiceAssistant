@@ -5,12 +5,14 @@ namespace Olbrasoft.VoiceAssistant.ContinuousListener.Services;
 
 /// <summary>
 /// Service for transcribing audio using Whisper.net.
+/// Supports two models: fast (for wake word detection) and accurate (for full transcription).
 /// </summary>
 public class TranscriptionService : IDisposable
 {
     private readonly ILogger<TranscriptionService> _logger;
     private readonly ContinuousListenerOptions _options;
-    private WhisperNetTranscriber? _transcriber;
+    private WhisperNetTranscriber? _fastTranscriber;
+    private WhisperNetTranscriber? _accurateTranscriber;
     private bool _disposed;
 
     public TranscriptionService(ILogger<TranscriptionService> logger, IConfiguration configuration)
@@ -21,48 +23,72 @@ public class TranscriptionService : IDisposable
     }
 
     /// <summary>
-    /// Initializes the Whisper transcriber.
+    /// Initializes both Whisper transcibers (fast and accurate).
     /// </summary>
     public void Initialize()
     {
-        if (_transcriber != null)
-        {
-            _logger.LogWarning("Transcriber already initialized");
-            return;
-        }
-
-        _logger.LogInformation("Loading Whisper model from: {Path}", _options.WhisperModelPath);
-        
         var loggerFactory = LoggerFactory.Create(builder => 
             builder.AddConsole().SetMinimumLevel(LogLevel.Warning));
-        var whisperLogger = loggerFactory.CreateLogger<WhisperNetTranscriber>();
-        
-        _transcriber = new WhisperNetTranscriber(whisperLogger, _options.WhisperModelPath, _options.WhisperLanguage);
-        
-        _logger.LogInformation("Whisper model loaded successfully (language: {Language})", _options.WhisperLanguage);
+
+        // Initialize fast model for wake word detection
+        if (_fastTranscriber == null && !string.IsNullOrEmpty(_options.WhisperFastModelPath))
+        {
+            _logger.LogInformation("Loading FAST Whisper model from: {Path}", _options.WhisperFastModelPath);
+            var fastLogger = loggerFactory.CreateLogger<WhisperNetTranscriber>();
+            _fastTranscriber = new WhisperNetTranscriber(fastLogger, _options.WhisperFastModelPath, _options.WhisperLanguage);
+            _logger.LogInformation("✅ Fast Whisper model loaded (for wake word detection)");
+        }
+
+        // Initialize accurate model for full transcription
+        if (_accurateTranscriber == null)
+        {
+            _logger.LogInformation("Loading ACCURATE Whisper model from: {Path}", _options.WhisperModelPath);
+            var accurateLogger = loggerFactory.CreateLogger<WhisperNetTranscriber>();
+            _accurateTranscriber = new WhisperNetTranscriber(accurateLogger, _options.WhisperModelPath, _options.WhisperLanguage);
+            _logger.LogInformation("✅ Accurate Whisper model loaded (for full transcription)");
+        }
     }
 
     /// <summary>
-    /// Transcribes audio data to text.
+    /// Transcribes audio data using the FAST model (for wake word detection).
+    /// </summary>
+    /// <param name="audioData">16-bit PCM audio data at 16kHz.</param>
+    /// <returns>Transcription result.</returns>
+    public async Task<TranscriptionResult> TranscribeFastAsync(byte[] audioData)
+    {
+        if (_fastTranscriber == null)
+        {
+            // Fallback to accurate if fast not available
+            return await TranscribeAsync(audioData);
+        }
+
+        var result = await _fastTranscriber.TranscribeAsync(audioData);
+        return result;
+    }
+
+    /// <summary>
+    /// Transcribes audio data using the ACCURATE model (for full command transcription).
     /// </summary>
     /// <param name="audioData">16-bit PCM audio data at 16kHz.</param>
     /// <returns>Transcription result.</returns>
     public async Task<TranscriptionResult> TranscribeAsync(byte[] audioData)
     {
-        if (_transcriber == null)
+        if (_accurateTranscriber == null)
         {
             throw new InvalidOperationException("Transcriber not initialized. Call Initialize() first.");
         }
 
-        var result = await _transcriber.TranscribeAsync(audioData);
+        var result = await _accurateTranscriber.TranscribeAsync(audioData);
         return result;
     }
 
     public void Dispose()
     {
         if (_disposed) return;
-        _transcriber?.Dispose();
-        _transcriber = null;
+        _fastTranscriber?.Dispose();
+        _fastTranscriber = null;
+        _accurateTranscriber?.Dispose();
+        _accurateTranscriber = null;
         _disposed = true;
         GC.SuppressFinalize(this);
     }

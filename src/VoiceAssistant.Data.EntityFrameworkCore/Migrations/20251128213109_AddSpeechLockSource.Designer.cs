@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using VoiceAssistant.Data.EntityFrameworkCore;
 
@@ -10,9 +11,11 @@ using VoiceAssistant.Data.EntityFrameworkCore;
 namespace VoiceAssistant.Data.EntityFrameworkCore.Migrations
 {
     [DbContext(typeof(VoiceAssistantDbContext))]
-    partial class VoiceAssistantDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251128213109_AddSpeechLockSource")]
+    partial class AddSpeechLockSource
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.0");
