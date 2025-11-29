@@ -83,7 +83,14 @@ public class ContinuousListenerOptions
     /// </summary>
     public int OpenCodePostSilenceMs { get; set; } = 2500;
 
+    /// <summary>
+    /// Maximum audio segment duration for transcription in milliseconds. Default: 10000ms (10 seconds).
+    /// Longer audio will be split into smaller chunks to prevent Whisper.net crashes.
+    /// </summary>
+    public int MaxSegmentMs { get; set; } = 10000;
+
     // Computed properties
     public int ChunkSizeBytes => SampleRate * VadChunkMs / 1000 * 2; // 16-bit = 2 bytes per sample
     public int PreBufferMaxBytes => SampleRate * PreBufferMs / 1000 * 2;
+    public int MaxSegmentBytes => SampleRate * MaxSegmentMs / 1000 * 2; // Max audio size for transcription
 }

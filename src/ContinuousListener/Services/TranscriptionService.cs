@@ -11,9 +11,13 @@ public class TranscriptionService : IDisposable
 {
     private readonly ILogger<TranscriptionService> _logger;
     private readonly ContinuousListenerOptions _options;
-    private WhisperNetTranscriber? _fastTranscriber;
-    private WhisperNetTranscriber? _accurateTranscriber;
+    // Only ONE transcriber to avoid Whisper.net CUDA/native library conflicts
+    // Having two WhisperFactory instances causes SIGSEGV crashes
+    private WhisperNetTranscriber? _transcriber;
     private bool _disposed;
+    
+    // Whisper.net native library is NOT thread-safe - only one transcription at a time
+    private readonly SemaphoreSlim _transcriptionLock = new(1, 1);
 
     public TranscriptionService(ILogger<TranscriptionService> logger, IConfiguration configuration)
     {
@@ -23,72 +27,92 @@ public class TranscriptionService : IDisposable
     }
 
     /// <summary>
-    /// Initializes both Whisper transcibers (fast and accurate).
+    /// Initializes Whisper transcriber (single model for all transcription).
     /// </summary>
     public void Initialize()
     {
+        if (_transcriber != null)
+            return;
+
         var loggerFactory = LoggerFactory.Create(builder => 
             builder.AddConsole().SetMinimumLevel(LogLevel.Warning));
 
-        // Initialize fast model for wake word detection
-        if (_fastTranscriber == null && !string.IsNullOrEmpty(_options.WhisperFastModelPath))
-        {
-            _logger.LogInformation("Loading FAST Whisper model from: {Path}", _options.WhisperFastModelPath);
-            var fastLogger = loggerFactory.CreateLogger<WhisperNetTranscriber>();
-            _fastTranscriber = new WhisperNetTranscriber(fastLogger, _options.WhisperFastModelPath, _options.WhisperLanguage);
-            _logger.LogInformation("✅ Fast Whisper model loaded (for wake word detection)");
-        }
-
-        // Initialize accurate model for full transcription
-        if (_accurateTranscriber == null)
-        {
-            _logger.LogInformation("Loading ACCURATE Whisper model from: {Path}", _options.WhisperModelPath);
-            var accurateLogger = loggerFactory.CreateLogger<WhisperNetTranscriber>();
-            _accurateTranscriber = new WhisperNetTranscriber(accurateLogger, _options.WhisperModelPath, _options.WhisperLanguage);
-            _logger.LogInformation("✅ Accurate Whisper model loaded (for full transcription)");
-        }
+        // Use single model for everything to avoid SIGSEGV crashes
+        // Two WhisperFactory instances sharing CUDA context cause segfaults
+        _logger.LogInformation("Loading Whisper model from: {Path}", _options.WhisperModelPath);
+        var whisperLogger = loggerFactory.CreateLogger<WhisperNetTranscriber>();
+        _transcriber = new WhisperNetTranscriber(whisperLogger, _options.WhisperModelPath, _options.WhisperLanguage);
+        _logger.LogInformation("✅ Whisper model loaded (single model for all transcription)");
     }
 
     /// <summary>
-    /// Transcribes audio data using the FAST model (for wake word detection).
+    /// Transcribes audio data using the single Whisper model.
+    /// TranscribeFastAsync now uses the same model as TranscribeAsync.
+    /// If audio is too large, it will be truncated to prevent Whisper.net crashes.
     /// </summary>
     /// <param name="audioData">16-bit PCM audio data at 16kHz.</param>
     /// <returns>Transcription result.</returns>
     public async Task<TranscriptionResult> TranscribeFastAsync(byte[] audioData)
     {
-        if (_fastTranscriber == null)
-        {
-            // Fallback to accurate if fast not available
-            return await TranscribeAsync(audioData);
-        }
-
-        var result = await _fastTranscriber.TranscribeAsync(audioData);
-        return result;
+        // Now uses the same model as TranscribeAsync (no separate fast model)
+        return await TranscribeAsync(audioData);
     }
 
     /// <summary>
-    /// Transcribes audio data using the ACCURATE model (for full command transcription).
+    /// Transcribes audio data using the Whisper model.
+    /// If audio is too large, it will be truncated to prevent Whisper.net crashes.
     /// </summary>
     /// <param name="audioData">16-bit PCM audio data at 16kHz.</param>
     /// <returns>Transcription result.</returns>
     public async Task<TranscriptionResult> TranscribeAsync(byte[] audioData)
     {
-        if (_accurateTranscriber == null)
+        if (_transcriber == null)
         {
             throw new InvalidOperationException("Transcriber not initialized. Call Initialize() first.");
         }
 
-        var result = await _accurateTranscriber.TranscribeAsync(audioData);
-        return result;
+        // Truncate audio if too large to prevent SIGSEGV crashes
+        var safeAudio = TruncateIfTooLarge(audioData);
+
+        // Whisper.net is NOT thread-safe - acquire lock before transcription
+        await _transcriptionLock.WaitAsync();
+        try
+        {
+            var result = await _transcriber.TranscribeAsync(safeAudio);
+            return result;
+        }
+        finally
+        {
+            _transcriptionLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Truncates audio data if it exceeds the maximum segment size.
+    /// Takes the last MaxSegmentBytes to preserve the most recent speech.
+    /// </summary>
+    private byte[] TruncateIfTooLarge(byte[] audioData)
+    {
+        if (audioData.Length <= _options.MaxSegmentBytes)
+        {
+            return audioData;
+        }
+
+        _logger.LogWarning("Audio too large ({Size} bytes > {Max} bytes), truncating to last {Max} bytes", 
+            audioData.Length, _options.MaxSegmentBytes, _options.MaxSegmentBytes);
+
+        // Take the last MaxSegmentBytes (most recent audio)
+        var truncated = new byte[_options.MaxSegmentBytes];
+        Buffer.BlockCopy(audioData, audioData.Length - _options.MaxSegmentBytes, truncated, 0, _options.MaxSegmentBytes);
+        return truncated;
     }
 
     public void Dispose()
     {
         if (_disposed) return;
-        _fastTranscriber?.Dispose();
-        _fastTranscriber = null;
-        _accurateTranscriber?.Dispose();
-        _accurateTranscriber = null;
+        _transcriber?.Dispose();
+        _transcriber = null;
+        _transcriptionLock.Dispose();
         _disposed = true;
         GC.SuppressFinalize(this);
     }
