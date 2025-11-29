@@ -73,8 +73,7 @@ public class WhisperNetTranscriber : ISpeechTranscriber
                 .ParentBuilder
                 // Lower temperature = more deterministic output
                 .WithTemperature(0.0f)
-                // Prompt to help with Czech language context
-                .WithPrompt("Toto je český text. Přepis hlasového vstupu v češtině.")
+                // No prompt - it was leaking into short transcriptions
                 .Build();
 
             _logger.LogInformation("Whisper.net initialized successfully, language: {Language}", _language);

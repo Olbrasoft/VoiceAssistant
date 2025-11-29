@@ -84,6 +84,12 @@ public class ContinuousListenerWorker : BackgroundService
         {
             _transcription.Initialize();
             _audioCapture.Start();
+            
+            // Calibrate VAD if enabled
+            if (_options.CalibrateOnStartup)
+            {
+                await CalibrateVadAsync(stoppingToken);
+            }
         }
         catch (Exception ex)
         {
@@ -127,7 +133,7 @@ public class ContinuousListenerWorker : BackgroundService
             case State.Waiting:
                 if (isSpeech)
                 {
-                    TransitionToRecording(rms);
+                    await TransitionToRecordingAsync(rms, cancellationToken);
                     
                     // Move pre-buffer to speech buffer
                     while (_preBuffer.Count > 0)
@@ -189,7 +195,7 @@ public class ContinuousListenerWorker : BackgroundService
                         {
                             _logger.LogDebug("Recording too short ({RecordingMs}ms < {MinMs}ms), discarding", 
                                 recordingMs, _options.MinRecordingMs);
-                            ResetToWaiting();
+                            await ResetToWaitingAsync(cancellationToken);
                         }
                     }
                 }
@@ -236,7 +242,7 @@ public class ContinuousListenerWorker : BackgroundService
                         
                         // Send collected command to OpenCode
                         await DispatchOpenCodeCommandAsync(cancellationToken);
-                        ResetToWaiting();
+                        await ResetToWaitingAsync(cancellationToken);
                     }
                     else if (_speechBufferBytes > 0 && silenceMs >= _options.PostSilenceMs)
                     {
@@ -248,13 +254,16 @@ public class ContinuousListenerWorker : BackgroundService
         }
     }
 
-    private void TransitionToRecording(float rms)
+    private async Task TransitionToRecordingAsync(float rms, CancellationToken cancellationToken)
     {
         _state = State.Recording;
         _recordingStart = DateTime.UtcNow;
         _silenceStart = default;
 
         _logger.LogInformation("🎤 SPEECH DETECTED (RMS={Rms:F4}), WAITING → RECORDING", rms);
+        
+        // Lock TTS immediately when speech is detected to prevent race condition
+        await _speechLock.LockAsync("Recording", cancellationToken);
     }
 
     private void TransitionToCollectingOpenCodeCommand()
@@ -296,7 +305,8 @@ public class ContinuousListenerWorker : BackgroundService
             var result = await _transcription.TranscribeAsync(audioData);
             if (result.Success && !string.IsNullOrWhiteSpace(result.Text))
             {
-                _logger.LogInformation("  Segment text: \"{Text}\"", result.Text);
+                // Bright green for command segments
+                Console.WriteLine($"\u001b[92;1m📝 \"{result.Text}\"\u001b[0m");
                 _openCodeCommandParts.Add(result.Text);
             }
         }
@@ -364,18 +374,19 @@ public class ContinuousListenerWorker : BackgroundService
             if (!fastResult.Success || string.IsNullOrWhiteSpace(fastResult.Text))
             {
                 _logger.LogDebug("No speech detected (fast model)");
-                ResetToWaiting();
+                await ResetToWaitingAsync(cancellationToken);
                 return;
             }
 
-            _logger.LogInformation("Fast transcript: \"{Text}\"", fastResult.Text);
+            // Bright cyan for transcript - most important info
+            Console.WriteLine($"\u001b[96;1m📝 \"{fastResult.Text}\"\u001b[0m");
             
             // Detect wake word from fast transcription
             var wakeResult = _wakeWord.Detect(fastResult.Text);
             
             if (!wakeResult.Detected)
             {
-                ResetToWaiting();
+                await ResetToWaitingAsync(cancellationToken);
                 return;
             }
 
@@ -402,15 +413,12 @@ public class ContinuousListenerWorker : BackgroundService
                     _logger.LogInformation("📝 Command after '{WakeWord}': \"{Command}\" (not dispatched yet)", 
                         wakeResult.WakeWord, wakeResult.Command);
                 }
-                ResetToWaiting();
+                await ResetToWaitingAsync(cancellationToken);
             }
             else if (isOpenCodeWakeWord)
             {
-                // "OpenCode" - lock speech and play acknowledgment IMMEDIATELY
+                // "OpenCode" - play acknowledgment (lock already held from Recording state)
                 _logger.LogInformation("🔊 Playing OpenCode acknowledgment");
-                
-                // Lock speech to prevent TTS while collecting command
-                await _speechLock.LockAsync($"WakeWord:{wakeResult.WakeWord}", cancellationToken);
                 
                 // Play ACK immediately (before accurate transcription)
                 await _wakeWordResponse.PlayResponseAsync(wakeWordLower, cancellationToken);
@@ -457,17 +465,17 @@ public class ContinuousListenerWorker : BackgroundService
             else
             {
                 _logger.LogWarning("Wake word '{WakeWord}' detected but not configured in any handler", wakeResult.WakeWord);
-                ResetToWaiting();
+                await ResetToWaitingAsync(cancellationToken);
             }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Transcription failed");
-            ResetToWaiting();
+            await ResetToWaitingAsync(cancellationToken);
         }
     }
 
-    private void ResetToWaiting()
+    private async Task ResetToWaitingAsync(CancellationToken cancellationToken)
     {
         _state = State.Waiting;
         _speechBuffer.Clear();
@@ -475,6 +483,40 @@ public class ContinuousListenerWorker : BackgroundService
         _silenceStart = default;
         _openCodeCommandParts.Clear();
 
-        _logger.LogInformation("→ WAITING");
+        // Release speech lock when going back to waiting
+        await _speechLock.UnlockAsync(cancellationToken);
+
+        // Gray color for less important info
+        Console.WriteLine("\u001b[90m→ WAITING\u001b[0m");
+    }
+
+    /// <summary>
+    /// Calibrates VAD by measuring ambient noise level for a few seconds.
+    /// </summary>
+    private async Task CalibrateVadAsync(CancellationToken cancellationToken)
+    {
+        // Stop any TTS before calibration to get accurate noise floor
+        await _ttsControl.StopAsync(cancellationToken);
+        await Task.Delay(200, cancellationToken); // Wait for audio to stop
+        
+        _logger.LogInformation("═══════════════════════════════════════════════════════════════");
+        _logger.LogInformation("  🎚️ CALIBRATING VAD - Please remain quiet for {Duration}ms...", 
+            _options.CalibrationDurationMs);
+        _logger.LogInformation("═══════════════════════════════════════════════════════════════");
+
+        var calibrationChunks = new List<byte[]>();
+        var calibrationStart = DateTime.UtcNow;
+        var calibrationEnd = calibrationStart.AddMilliseconds(_options.CalibrationDurationMs);
+
+        while (DateTime.UtcNow < calibrationEnd && !cancellationToken.IsCancellationRequested)
+        {
+            var chunk = await _audioCapture.ReadChunkAsync(cancellationToken);
+            if (chunk != null)
+            {
+                calibrationChunks.Add(chunk);
+            }
+        }
+
+        _vad.Calibrate(calibrationChunks, _options.CalibrationMultiplier);
     }
 }

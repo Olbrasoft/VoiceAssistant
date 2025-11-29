@@ -89,6 +89,22 @@ public class ContinuousListenerOptions
     /// </summary>
     public int MaxSegmentMs { get; set; } = 10000;
 
+    /// <summary>
+    /// Whether to calibrate VAD threshold at startup by measuring ambient noise. Default: true.
+    /// </summary>
+    public bool CalibrateOnStartup { get; set; } = true;
+
+    /// <summary>
+    /// Duration of calibration period in milliseconds. Default: 2000ms (2 seconds).
+    /// </summary>
+    public int CalibrationDurationMs { get; set; } = 2000;
+
+    /// <summary>
+    /// Multiplier for threshold above measured noise floor. Default: 1.8.
+    /// Higher values = less sensitive (fewer false triggers), lower = more sensitive.
+    /// </summary>
+    public float CalibrationMultiplier { get; set; } = 1.8f;
+
     // Computed properties
     public int ChunkSizeBytes => SampleRate * VadChunkMs / 1000 * 2; // 16-bit = 2 bytes per sample
     public int PreBufferMaxBytes => SampleRate * PreBufferMs / 1000 * 2;
