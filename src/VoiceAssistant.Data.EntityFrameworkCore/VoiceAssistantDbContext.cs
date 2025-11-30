@@ -40,6 +40,16 @@ public class VoiceAssistantDbContext : DbContext
     /// </summary>
     public DbSet<SpeechLockSourceEntity> SpeechLockSources => Set<SpeechLockSourceEntity>();
 
+    /// <summary>
+    /// Gets or sets the assistant speech state (single record tracking if assistant is speaking).
+    /// </summary>
+    public DbSet<AssistantSpeechState> AssistantSpeechStates => Set<AssistantSpeechState>();
+
+    /// <summary>
+    /// Gets or sets the Groq Router decision logs.
+    /// </summary>
+    public DbSet<GroqRouterLog> GroqRouterLogs => Set<GroqRouterLog>();
+
     public VoiceAssistantDbContext(DbContextOptions<VoiceAssistantDbContext> options) 
         : base(options)
     {
@@ -145,6 +155,44 @@ public class VoiceAssistantDbContext : DbContext
                   .WithMany(s => s.SpeechLocks)
                   .HasForeignKey(e => e.SourceId)
                   .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        // AssistantSpeechState configuration (singleton record)
+        modelBuilder.Entity<AssistantSpeechState>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("datetime('now')");
+
+            // Seed with single record (ID=1)
+            entity.HasData(new AssistantSpeechState
+            {
+                Id = 1,
+                IsSpeaking = false,
+                StartedAt = null,
+                EndedAt = null,
+                UpdatedAt = new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+            });
+        });
+
+        // GroqRouterLog configuration
+        modelBuilder.Entity<GroqRouterLog>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.InputText).IsRequired();
+            entity.Property(e => e.Action).IsRequired();
+            entity.Property(e => e.Reason).HasMaxLength(500);
+            entity.Property(e => e.Response).HasMaxLength(1000);
+            entity.Property(e => e.CommandForOpenCode).HasMaxLength(500);
+            entity.Property(e => e.ProcessingError).HasMaxLength(500);
+            entity.HasIndex(e => e.CreatedAt);
+            entity.HasIndex(e => e.Action);
+
+            // Optional foreign key to TranscriptionLog
+            entity.HasOne(e => e.TranscriptionLog)
+                  .WithMany()
+                  .HasForeignKey(e => e.TranscriptionLogId)
+                  .OnDelete(DeleteBehavior.SetNull);
         });
     }
 }
