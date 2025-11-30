@@ -214,8 +214,16 @@ ODPOVĚZ POUZE TÍMTO JSON (žádný další text):
 }}
 
 POLE is_question:
-- true = otázka/dotaz (""jak"", ""co"", ""proč"", ""kde"", ""který"", ""jaký"", požadavek na vysvětlení)
-- false = příkaz/instrukce (""vytvoř"", ""oprav"", ""spusť"", ""commitni"", ""otevři"", imperativ)";
+- true = otázka, dotaz, oznámení, informace, nebo cokoliv co NEVYŽADUJE okamžitou akci
+  - Otázky: ""jak"", ""co"", ""proč"", ""kde"", ""který"", ""jaký""
+  - Oznámení/informace: ""už je hotovo"", ""dokončil jsem"", ""mám problém"", ""nefunguje mi""
+  - Diskuze o problému bez jasného příkazu
+  - Když uživatel něco vysvětluje nebo popisuje situaci
+- false = POUZE jasný příkaz/instrukce v imperativu
+  - Příkazy: ""vytvoř"", ""oprav"", ""spusť"", ""commitni"", ""otevři"", ""smaž"", ""přidej""
+  - Musí být jasný imperativ - co má OpenCode UDĚLAT
+
+DŮLEŽITÉ: Když si nejsi jistý, nastav is_question=true (bezpečnější volba)";
     }
 
     private LlmRouterResult ParseLlmResponse(string content, int responseTimeMs)
