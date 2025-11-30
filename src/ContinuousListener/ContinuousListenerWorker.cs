@@ -1,10 +1,11 @@
 using Olbrasoft.VoiceAssistant.ContinuousListener.Services;
+using VoiceAssistant.Shared.Data.Enums;
 
 namespace Olbrasoft.VoiceAssistant.ContinuousListener;
 
 /// <summary>
-/// Main worker that continuously listens for speech, transcribes it, 
-/// and detects wake words to dispatch commands.
+/// Main worker that continuously listens for speech, transcribes it,
+/// and uses LLM Router to determine actions (OpenCode, Respond, Bash, Ignore).
 /// </summary>
 public class ContinuousListenerWorker : BackgroundService
 {
@@ -12,15 +13,18 @@ public class ContinuousListenerWorker : BackgroundService
     private readonly AudioCaptureService _audioCapture;
     private readonly VadService _vad;
     private readonly TranscriptionService _transcription;
-    private readonly WakeWordService _wakeWord;
+    private readonly ILlmRouterService _llmRouter;
     private readonly CommandDispatcher _dispatcher;
-    private readonly WakeWordResponseService _wakeWordResponse;
+    private readonly TtsPlaybackService _ttsPlayback;
     private readonly TtsControlService _ttsControl;
     private readonly SpeechLockService _speechLock;
+    private readonly AssistantSpeechStateService _assistantSpeechState;
+    private readonly AssistantSpeechTrackerService _speechTracker;
+    private readonly BashExecutionService _bashExecution;
     private readonly ContinuousListenerOptions _options;
 
-    // State machine
-    private enum State { Waiting, Recording, CollectingOpenCodeCommand }
+    // State machine - simplified without wake words
+    private enum State { Waiting, Recording }
     private State _state = State.Waiting;
 
     // Buffers
@@ -34,9 +38,11 @@ public class ContinuousListenerWorker : BackgroundService
     private DateTime _recordingStart;
     private int _segmentCount = 0;
 
-    // OpenCode command collection
-    private readonly List<string> _openCodeCommandParts = new();
-    private DateTime _openCodeCollectionStart;
+    // Stop commands - words that immediately stop TTS playback
+    private static readonly HashSet<string> StopCommands = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "stop", "stůj", "ticho", "dost", "přestaň", "zastav"
+    };
 
     public ContinuousListenerWorker(
         ILogger<ContinuousListenerWorker> logger,
@@ -44,21 +50,27 @@ public class ContinuousListenerWorker : BackgroundService
         AudioCaptureService audioCapture,
         VadService vad,
         TranscriptionService transcription,
-        WakeWordService wakeWord,
+        ILlmRouterService llmRouter,
         CommandDispatcher dispatcher,
-        WakeWordResponseService wakeWordResponse,
+        TtsPlaybackService ttsPlayback,
         TtsControlService ttsControl,
-        SpeechLockService speechLock)
+        SpeechLockService speechLock,
+        AssistantSpeechStateService assistantSpeechState,
+        AssistantSpeechTrackerService speechTracker,
+        BashExecutionService bashExecution)
     {
         _logger = logger;
         _audioCapture = audioCapture;
         _vad = vad;
         _transcription = transcription;
-        _wakeWord = wakeWord;
+        _llmRouter = llmRouter;
         _dispatcher = dispatcher;
-        _wakeWordResponse = wakeWordResponse;
+        _ttsPlayback = ttsPlayback;
         _ttsControl = ttsControl;
         _speechLock = speechLock;
+        _assistantSpeechState = assistantSpeechState;
+        _speechTracker = speechTracker;
+        _bashExecution = bashExecution;
 
         _options = new ContinuousListenerOptions();
         configuration.GetSection(ContinuousListenerOptions.SectionName).Bind(_options);
@@ -66,38 +78,17 @@ public class ContinuousListenerWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("═══════════════════════════════════════════════════════════════");
-        _logger.LogInformation("  ContinuousListener Starting");
-        _logger.LogInformation("═══════════════════════════════════════════════════════════════");
-        _logger.LogInformation("  VAD chunk: {VadChunkMs}ms ({ChunkSize} bytes)", 
-            _options.VadChunkMs, _options.ChunkSizeBytes);
-        _logger.LogInformation("  Pre-buffer: {PreBufferMs}ms", _options.PreBufferMs);
-        _logger.LogInformation("  Post-silence: {PostSilenceMs}ms", _options.PostSilenceMs);
-        _logger.LogInformation("  OpenCode post-silence: {OpenCodePostSilenceMs}ms", _options.OpenCodePostSilenceMs);
-        _logger.LogInformation("  Min recording: {MinRecordingMs}ms", _options.MinRecordingMs);
-        _logger.LogInformation("  Silence threshold: {Threshold} RMS", _options.SilenceThreshold);
-        _logger.LogInformation("  Wake words: {WakeWords}", string.Join(", ", _options.WakeWords));
-        _logger.LogInformation("═══════════════════════════════════════════════════════════════");
-
         // Initialize services
         try
         {
             _transcription.Initialize();
             _audioCapture.Start();
-            
-            // Calibrate VAD if enabled
-            if (_options.CalibrateOnStartup)
-            {
-                await CalibrateVadAsync(stoppingToken);
-            }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to initialize services");
             return;
         }
-
-        _logger.LogInformation("Listening... (State: WAITING)");
 
         try
         {
@@ -120,7 +111,6 @@ public class ContinuousListenerWorker : BackgroundService
         finally
         {
             _audioCapture.Stop();
-            _logger.LogInformation("ContinuousListener stopped");
         }
     }
 
@@ -193,156 +183,26 @@ public class ContinuousListenerWorker : BackgroundService
                         }
                         else
                         {
-                            _logger.LogDebug("Recording too short ({RecordingMs}ms < {MinMs}ms), discarding", 
-                                recordingMs, _options.MinRecordingMs);
                             await ResetToWaitingAsync(cancellationToken);
                         }
                     }
                 }
                 break;
-
-            case State.CollectingOpenCodeCommand:
-                // In this state, we're collecting command segments after OpenCode wake word
-                if (isSpeech)
-                {
-                    // Start recording if not already
-                    if (_speechBuffer.Count == 0)
-                    {
-                        _recordingStart = DateTime.UtcNow;
-                    }
-                    
-                    _speechBuffer.Add(chunk);
-                    _speechBufferBytes += chunk.Length;
-                    _silenceStart = default;
-                }
-                else
-                {
-                    if (_speechBuffer.Count > 0)
-                    {
-                        _speechBuffer.Add(chunk);
-                        _speechBufferBytes += chunk.Length;
-                    }
-
-                    // Start or continue silence timer
-                    if (_silenceStart == default)
-                    {
-                        _silenceStart = DateTime.UtcNow;
-                    }
-
-                    var silenceMs = (DateTime.UtcNow - _silenceStart).TotalMilliseconds;
-
-                    // Use longer timeout for OpenCode command collection
-                    if (silenceMs >= _options.OpenCodePostSilenceMs)
-                    {
-                        // Process any remaining audio
-                        if (_speechBufferBytes > 0)
-                        {
-                            await ProcessOpenCodeSegmentAsync(cancellationToken);
-                        }
-                        
-                        // Send collected command to OpenCode
-                        await DispatchOpenCodeCommandAsync(cancellationToken);
-                        await ResetToWaitingAsync(cancellationToken);
-                    }
-                    else if (_speechBufferBytes > 0 && silenceMs >= _options.PostSilenceMs)
-                    {
-                        // Process this segment but keep collecting
-                        await ProcessOpenCodeSegmentAsync(cancellationToken);
-                    }
-                }
-                break;
         }
     }
 
-    private async Task TransitionToRecordingAsync(float rms, CancellationToken cancellationToken)
+    private async Task TransitionToRecordingAsync(float probability, CancellationToken cancellationToken)
     {
+        // Note: We no longer block recording when TTS history is not empty.
+        // Instead, we record everything and filter out TTS echo from transcription.
+        // This allows capturing user speech that overlaps with or follows TTS.
+        
         _state = State.Recording;
         _recordingStart = DateTime.UtcNow;
         _silenceStart = default;
-
-        _logger.LogInformation("🎤 SPEECH DETECTED (RMS={Rms:F4}), WAITING → RECORDING", rms);
         
-        // Lock TTS immediately when speech is detected to prevent race condition
+        // Lock TTS immediately when speech is detected
         await _speechLock.LockAsync("Recording", cancellationToken);
-    }
-
-    private void TransitionToCollectingOpenCodeCommand()
-    {
-        _state = State.CollectingOpenCodeCommand;
-        _openCodeCommandParts.Clear();
-        _openCodeCollectionStart = DateTime.UtcNow;
-        _speechBuffer.Clear();
-        _speechBufferBytes = 0;
-        _silenceStart = DateTime.UtcNow; // Start silence timer immediately
-
-        _logger.LogInformation("🎧 RECORDING → COLLECTING OPENCODE COMMAND");
-    }
-
-    private async Task ProcessOpenCodeSegmentAsync(CancellationToken cancellationToken)
-    {
-        if (_speechBufferBytes == 0) return;
-
-        _segmentCount++;
-        _logger.LogInformation("  Processing OpenCode segment #{Count} ({Bytes} bytes)", 
-            _segmentCount, _speechBufferBytes);
-
-        // Combine all chunks
-        var audioData = new byte[_speechBufferBytes];
-        int offset = 0;
-        foreach (var chunk in _speechBuffer)
-        {
-            Buffer.BlockCopy(chunk, 0, audioData, offset, chunk.Length);
-            offset += chunk.Length;
-        }
-
-        // Clear buffer for next segment
-        _speechBuffer.Clear();
-        _speechBufferBytes = 0;
-
-        // Transcribe
-        try
-        {
-            var result = await _transcription.TranscribeAsync(audioData);
-            if (result.Success && !string.IsNullOrWhiteSpace(result.Text))
-            {
-                // Bright green for command segments
-                Console.WriteLine($"\u001b[92;1m📝 \"{result.Text}\"\u001b[0m");
-                _openCodeCommandParts.Add(result.Text);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Transcription failed for OpenCode segment");
-        }
-    }
-
-    private async Task DispatchOpenCodeCommandAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            if (_openCodeCommandParts.Count == 0)
-            {
-                _logger.LogInformation("No command collected after OpenCode wake word");
-                return;
-            }
-
-            var fullCommand = string.Join(" ", _openCodeCommandParts);
-            var collectionDuration = DateTime.UtcNow - _openCodeCollectionStart;
-
-            _logger.LogInformation("═══════════════════════════════════════════════════════════════");
-            _logger.LogInformation("  📤 DISPATCHING TO OPENCODE");
-            _logger.LogInformation("  Command: \"{Command}\"", fullCommand);
-            _logger.LogInformation("  Collection time: {Duration}ms, Segments: {Count}", 
-                collectionDuration.TotalMilliseconds, _openCodeCommandParts.Count);
-            _logger.LogInformation("═══════════════════════════════════════════════════════════════");
-
-            await _dispatcher.DispatchAsync(fullCommand, submitPrompt: true, cancellationToken);
-        }
-        finally
-        {
-            // Always release the speech lock after dispatching
-            await _speechLock.UnlockAsync(cancellationToken);
-        }
     }
 
     private async Task CompleteRecordingAsync(CancellationToken cancellationToken)
@@ -350,12 +210,6 @@ public class ContinuousListenerWorker : BackgroundService
         _segmentCount++;
         var duration = DateTime.UtcNow - _recordingStart;
 
-        _logger.LogInformation("═══════════════════════════════════════════════════════════════");
-        _logger.LogInformation("  SEGMENT #{Count} COMPLETE", _segmentCount);
-        _logger.LogInformation("  Duration: {Duration}ms, Audio: {Bytes} bytes", 
-            duration.TotalMilliseconds, _speechBufferBytes);
-        _logger.LogInformation("═══════════════════════════════════════════════════════════════");
-
         // Combine all chunks
         var audioData = new byte[_speechBufferBytes];
         int offset = 0;
@@ -365,113 +219,179 @@ public class ContinuousListenerWorker : BackgroundService
             offset += chunk.Length;
         }
 
-        // STEP 1: Fast transcription for wake word detection
         try
         {
-            _logger.LogInformation("Fast transcription (wake word detection)...");
-            var fastResult = await _transcription.TranscribeFastAsync(audioData);
+            // Transcribe speech
+            var transcriptionResult = await _transcription.TranscribeAsync(audioData);
 
-            if (!fastResult.Success || string.IsNullOrWhiteSpace(fastResult.Text))
+            if (!transcriptionResult.Success || string.IsNullOrWhiteSpace(transcriptionResult.Text))
             {
-                _logger.LogDebug("No speech detected (fast model)");
+                _speechTracker.ClearHistory();
                 await ResetToWaitingAsync(cancellationToken);
                 return;
             }
 
-            // Bright cyan for transcript - most important info
-            Console.WriteLine($"\u001b[96;1m📝 \"{fastResult.Text}\"\u001b[0m");
+            var text = transcriptionResult.Text;
             
-            // Detect wake word from fast transcription
-            var wakeResult = _wakeWord.Detect(fastResult.Text);
+            // Bright cyan for original transcript from Whisper
+            Console.WriteLine($"\u001b[96;1m📝 \"{text}\"\u001b[0m");
+
+            // Filter out TTS echo(es) from the transcription
+            var filteredText = _speechTracker.FilterEchoFromTranscription(text);
             
-            if (!wakeResult.Detected)
+            if (string.IsNullOrWhiteSpace(filteredText))
             {
+                // Pure echo, no user speech
+                Console.WriteLine($"\u001b[90m🔇 Filtered out - only echo detected\u001b[0m");
+                _speechTracker.ClearHistory();
+                await ResetToWaitingAsync(cancellationToken);
+                return;
+            }
+            
+            // Update text with filtered version
+            if (filteredText != text)
+            {
+                Console.WriteLine($"\u001b[93m🔇 After echo removal: \"{filteredText}\"\u001b[0m");
+                text = filteredText;
+            }
+
+            // Local pre-filter: skip short/noise phrases before calling LLM API
+            if (ShouldSkipLocally(text))
+            {
+                Console.WriteLine($"\u001b[90m⏭️ Skipped locally (too short or noise)\u001b[0m");
+                _speechTracker.ClearHistory();
                 await ResetToWaitingAsync(cancellationToken);
                 return;
             }
 
-            _logger.LogInformation("🎯 WAKE WORD: \"{WakeWord}\" (fast model)", wakeResult.WakeWord);
+            // Check for STOP command - this is handled locally, not sent to LLM
+            if (IsStopCommand(text))
+            {
+                // Check if the stop word came from TTS (echo) or from user
+                if (_speechTracker.ContainsStopWord(StopCommands))
+                {
+                    // TTS said "stop" - this is echo, ignore it
+                    Console.WriteLine($"\u001b[90m🔇 Stop command from TTS echo - ignoring\u001b[0m");
+                    _speechTracker.ClearHistory();
+                    await ResetToWaitingAsync(cancellationToken);
+                    return;
+                }
+                else
+                {
+                    // User said "stop" - stop TTS playback immediately
+                    Console.WriteLine($"\u001b[91;1m🛑 User STOP command - stopping TTS playback\u001b[0m");
+                    await _ttsControl.StopAsync(cancellationToken);
+                    _speechTracker.ClearHistory();
+                    await ResetToWaitingAsync(cancellationToken);
+                    return;
+                }
+            }
+
+            // Clear TTS history before sending to LLM (we're done with echo filtering)
+            _speechTracker.ClearHistory();
+
+            // Bílá barva pro text odesílaný na LLM
+            Console.WriteLine($"\u001b[97;1m🤖 → LLM: \"{text}\"\u001b[0m");
+
+            // Route through LLM (Cerebras or Groq)
+            var routerResult = await _llmRouter.RouteAsync(text, cancellationToken);
+
+            // Barevný výpis rozhodnutí LLM routeru
+            var actionColor = routerResult.Action == LlmRouterAction.Ignore 
+                ? "\u001b[91;1m"  // Červená pro IGNORE
+                : "\u001b[92;1m"; // Zelená pro akce (OpenCode, Respond, Bash)
+            Console.WriteLine($"{actionColor}🎯 {_llmRouter.ProviderName}: {routerResult.Action.ToString().ToUpper()} (confidence: {routerResult.Confidence:F2}, {routerResult.ResponseTimeMs}ms)\u001b[0m");
             
-            // Stop any playing TTS immediately
+            if (!string.IsNullOrEmpty(routerResult.Reason))
+            {
+                Console.WriteLine($"{actionColor}   └─ {routerResult.Reason}\u001b[0m");
+            }
+
+            // Stop any currently playing TTS before processing
             await _ttsControl.StopAsync(cancellationToken);
-            
-            var wakeWordLower = wakeResult.WakeWord!.ToLowerInvariant();
-            var isAudioResponseWakeWord = _options.AudioResponseWakeWords
-                .Any(w => w.Equals(wakeWordLower, StringComparison.OrdinalIgnoreCase));
-            var isOpenCodeWakeWord = _options.OpenCodeWakeWords
-                .Any(w => w.Equals(wakeWordLower, StringComparison.OrdinalIgnoreCase));
 
-            if (isAudioResponseWakeWord)
+            switch (routerResult.Action)
             {
-                // "Počítači" - play audio acknowledgment IMMEDIATELY
-                _logger.LogInformation("🔊 Playing audio acknowledgment for '{WakeWord}'", wakeResult.WakeWord);
-                await _wakeWordResponse.PlayResponseAsync(wakeWordLower, cancellationToken);
-                
-                // TODO: Future - wait for follow-up command after acknowledgment
-                if (!string.IsNullOrWhiteSpace(wakeResult.Command))
-                {
-                    _logger.LogInformation("📝 Command after '{WakeWord}': \"{Command}\" (not dispatched yet)", 
-                        wakeResult.WakeWord, wakeResult.Command);
-                }
-                await ResetToWaitingAsync(cancellationToken);
-            }
-            else if (isOpenCodeWakeWord)
-            {
-                // "OpenCode" - play acknowledgment (lock already held from Recording state)
-                _logger.LogInformation("🔊 Playing OpenCode acknowledgment");
-                
-                // Play ACK immediately (before accurate transcription)
-                await _wakeWordResponse.PlayResponseAsync(wakeWordLower, cancellationToken);
-                
-                // STEP 2: Now do accurate transcription for the command
-                // Only if there might be a command after wake word
-                string? accurateCommand = null;
-                if (!string.IsNullOrWhiteSpace(wakeResult.Command))
-                {
-                    _logger.LogInformation("Accurate transcription for command...");
-                    var accurateResult = await _transcription.TranscribeAsync(audioData);
-                    
-                    if (accurateResult.Success && !string.IsNullOrWhiteSpace(accurateResult.Text))
-                    {
-                        _logger.LogInformation("Accurate transcript: \"{Text}\"", accurateResult.Text);
-                        
-                        // Re-detect wake word to get accurate command
-                        var accurateWakeResult = _wakeWord.Detect(accurateResult.Text);
-                        if (accurateWakeResult.Detected && !string.IsNullOrWhiteSpace(accurateWakeResult.Command))
-                        {
-                            accurateCommand = accurateWakeResult.Command;
-                        }
-                    }
-                }
-                
-                // Add command if found
-                if (!string.IsNullOrWhiteSpace(accurateCommand))
-                {
-                    _openCodeCommandParts.Clear();
-                    _openCodeCommandParts.Add(accurateCommand);
-                    _logger.LogInformation("📝 Initial command (accurate): \"{Command}\"", accurateCommand);
-                }
-                else if (!string.IsNullOrWhiteSpace(wakeResult.Command))
-                {
-                    // Fallback to fast transcription command
-                    _openCodeCommandParts.Clear();
-                    _openCodeCommandParts.Add(wakeResult.Command);
-                    _logger.LogInformation("📝 Initial command (fast): \"{Command}\"", wakeResult.Command);
-                }
-                
-                // Transition to collecting more command segments
-                TransitionToCollectingOpenCodeCommand();
-            }
-            else
-            {
-                _logger.LogWarning("Wake word '{WakeWord}' detected but not configured in any handler", wakeResult.WakeWord);
-                await ResetToWaitingAsync(cancellationToken);
+                case LlmRouterAction.OpenCode:
+                    await HandleOpenCodeActionAsync(text, cancellationToken);
+                    break;
+
+                case LlmRouterAction.Respond:
+                    await HandleRespondActionAsync(routerResult.Response, cancellationToken);
+                    break;
+
+                case LlmRouterAction.Bash:
+                    await HandleBashActionAsync(routerResult.BashCommand, routerResult.Response, cancellationToken);
+                    break;
+
+                case LlmRouterAction.Ignore:
+                    // Už je vypsáno červeně výše
+                    break;
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Transcription failed");
+            _logger.LogError(ex, "Error processing speech");
+        }
+        finally
+        {
             await ResetToWaitingAsync(cancellationToken);
+        }
+    }
+
+    private async Task HandleOpenCodeActionAsync(string command, CancellationToken cancellationToken)
+    {
+        // Play acknowledgment sound or TTS
+        // TODO: Could add audio ACK here like "Rozumím"
+        
+        await _dispatcher.DispatchAsync(command, submitPrompt: true, cancellationToken);
+    }
+
+    private async Task HandleRespondActionAsync(string? response, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(response))
+        {
+            _logger.LogWarning("LLM returned RESPOND but no response text");
+            return;
+        }
+
+        // Bright green for responses
+        Console.WriteLine($"\u001b[92;1m🔊 \"{response}\"\u001b[0m");
+
+        // Release speech lock before TTS so we don't block ourselves
+        await _speechLock.UnlockAsync(cancellationToken);
+
+        // Speak the response
+        await _ttsPlayback.SpeakAsync(response, cancellationToken);
+    }
+
+    private async Task HandleBashActionAsync(string? bashCommand, string? response, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(bashCommand))
+        {
+            _logger.LogWarning("LLM returned BASH but no bash_command");
+            return;
+        }
+
+        // Yellow for bash commands
+        Console.WriteLine($"\u001b[93;1m💻 $ {bashCommand}\u001b[0m");
+
+        // Execute the bash command in background
+        var success = await _bashExecution.ExecuteAsync(bashCommand);
+
+        if (!success)
+        {
+            _logger.LogWarning("Bash command failed: {Command}", bashCommand);
+        }
+
+        // Release speech lock before TTS
+        await _speechLock.UnlockAsync(cancellationToken);
+
+        // Speak the response if provided
+        if (!string.IsNullOrWhiteSpace(response))
+        {
+            Console.WriteLine($"\u001b[92;1m🔊 \"{response}\"\u001b[0m");
+            await _ttsPlayback.SpeakAsync(response, cancellationToken);
         }
     }
 
@@ -481,7 +401,6 @@ public class ContinuousListenerWorker : BackgroundService
         _speechBuffer.Clear();
         _speechBufferBytes = 0;
         _silenceStart = default;
-        _openCodeCommandParts.Clear();
 
         // Release speech lock when going back to waiting
         await _speechLock.UnlockAsync(cancellationToken);
@@ -491,32 +410,60 @@ public class ContinuousListenerWorker : BackgroundService
     }
 
     /// <summary>
-    /// Calibrates VAD by measuring ambient noise level for a few seconds.
+    /// Local pre-filter to skip noise phrases before calling LLM API.
+    /// This saves API calls for obvious non-commands.
+    /// Note: Short texts are allowed (user requested to keep them).
     /// </summary>
-    private async Task CalibrateVadAsync(CancellationToken cancellationToken)
+    private bool ShouldSkipLocally(string text)
     {
-        // Stop any TTS before calibration to get accurate noise floor
-        await _ttsControl.StopAsync(cancellationToken);
-        await Task.Delay(200, cancellationToken); // Wait for audio to stop
+        var normalized = text.Trim().ToLowerInvariant();
         
-        _logger.LogInformation("═══════════════════════════════════════════════════════════════");
-        _logger.LogInformation("  🎚️ CALIBRATING VAD - Please remain quiet for {Duration}ms...", 
-            _options.CalibrationDurationMs);
-        _logger.LogInformation("═══════════════════════════════════════════════════════════════");
-
-        var calibrationChunks = new List<byte[]>();
-        var calibrationStart = DateTime.UtcNow;
-        var calibrationEnd = calibrationStart.AddMilliseconds(_options.CalibrationDurationMs);
-
-        while (DateTime.UtcNow < calibrationEnd && !cancellationToken.IsCancellationRequested)
+        // Blacklist of common noise phrases (exact matches after normalization)
+        var noisePatterns = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            var chunk = await _audioCapture.ReadChunkAsync(cancellationToken);
-            if (chunk != null)
-            {
-                calibrationChunks.Add(chunk);
-            }
+            "ano", "ne", "jo", "no", "tak", "hmm", "hm", "aha", "ok", "okay",
+            "dobře", "jasně", "fajn", "super", "díky", "děkuji", "prosím",
+            "moment", "počkej", "ehm", "ehm ehm", "no tak", "tak jo",
+            "to je", "to bylo", "a tak", "no jo", "no ne", "tak tak",
+            "jasně jasně", "jo jo", "ne ne", "aha aha", "mm", "mhm",
+            "no nic", "nic", "nevím", "uvidíme", "možná", "asi",
+            "co to", "co je", "hele", "hele hele", "víš co", "že jo",
+            "no jasně", "no dobře", "no fajn", "to jo", "to ne",
+            "tak nějak", "nějak", "prostě", "vlastně", "takže",
+            // Common transcription artifacts
+            "...", ".", ",", "!", "?"
+        };
+
+        // Check for exact match with noise
+        if (noisePatterns.Contains(normalized.TrimEnd('.', ',', '!', '?', ' ')))
+        {
+            return true;
         }
 
-        _vad.Calibrate(calibrationChunks, _options.CalibrationMultiplier);
+        return false;
+    }
+
+    /// <summary>
+    /// Checks if the text contains a stop command (stop, stůj, ticho, dost, etc.).
+    /// The stop command can be anywhere in the text (e.g., "Počítači, stop").
+    /// </summary>
+    internal static bool IsStopCommand(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+            
+        var normalized = text.Trim().ToLowerInvariant();
+        
+        // Split into words and check if any word is a stop command
+        var words = normalized.Split(new[] { ' ', ',', '.', '!', '?', ';', ':' }, 
+            StringSplitOptions.RemoveEmptyEntries);
+            
+        foreach (var word in words)
+        {
+            if (StopCommands.Contains(word))
+                return true;
+        }
+        
+        return false;
     }
 }
