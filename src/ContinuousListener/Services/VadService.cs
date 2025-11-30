@@ -1,19 +1,24 @@
-using Microsoft.Extensions.Logging;
-
 namespace Olbrasoft.VoiceAssistant.ContinuousListener.Services;
 
 /// <summary>
-/// Voice Activity Detection service using RMS-based thresholding.
-/// Supports automatic calibration to ambient noise level.
+/// Voice Activity Detection service using Silero VAD neural network model.
+/// Much more accurate than RMS-based detection, no calibration needed.
 /// </summary>
-public class VadService
+public class VadService : IDisposable
 {
     private readonly ILogger<VadService> _logger;
     private readonly ContinuousListenerOptions _options;
+    private readonly SileroVadOnnxModel _model;
     
-    // Dynamic threshold after calibration
-    private float _dynamicThreshold;
-    private bool _isCalibrated;
+    // Silero VAD threshold (0.0 - 1.0)
+    // 0.5 is recommended default, higher = less sensitive
+    private const float SpeechThreshold = 0.5f;
+    
+    // Silero requires exactly 512 samples at 16kHz
+    private const int SileroChunkSamples = 512;
+    
+    // Buffer for accumulating samples when chunks are different size
+    private readonly List<float> _sampleBuffer = new();
 
     public VadService(ILogger<VadService> logger, IConfiguration configuration)
     {
@@ -21,117 +26,113 @@ public class VadService
         _options = new ContinuousListenerOptions();
         configuration.GetSection(ContinuousListenerOptions.SectionName).Bind(_options);
         
-        // Start with configured threshold
-        _dynamicThreshold = _options.SilenceThreshold;
-        _isCalibrated = false;
+        // Load Silero VAD model
+        var modelPath = _options.SileroVadModelPath;
+        _logger.LogInformation("Loading Silero VAD model from: {Path}", modelPath);
+        
+        if (!File.Exists(modelPath))
+        {
+            throw new FileNotFoundException($"Silero VAD model not found at: {modelPath}");
+        }
+        
+        _model = new SileroVadOnnxModel(modelPath);
+        _logger.LogInformation("Silero VAD model loaded successfully");
     }
 
     /// <summary>
-    /// Calibrates the VAD by measuring ambient noise level.
-    /// Should be called at startup with a few seconds of ambient audio.
+    /// Converts 16-bit PCM audio to float array normalized to -1.0 to 1.0.
     /// </summary>
-    /// <param name="audioChunks">Audio chunks captured during calibration period.</param>
-    /// <param name="multiplier">Multiplier for threshold above noise floor (default 1.5x).</param>
-    public void Calibrate(IEnumerable<byte[]> audioChunks, float multiplier = 1.5f)
-    {
-        var rmsValues = audioChunks.Select(CalculateRms).ToList();
-        
-        if (rmsValues.Count == 0)
-        {
-            _logger.LogWarning("No audio chunks for calibration, using default threshold");
-            return;
-        }
-
-        // Calculate average and max RMS of ambient noise
-        float avgRms = rmsValues.Average();
-        float maxRms = rmsValues.Max();
-        
-        // Set threshold above the noise floor
-        // Use max + margin to avoid false triggers from occasional noise spikes
-        float noiseFloor = Math.Max(avgRms, maxRms * 0.8f);
-        _dynamicThreshold = noiseFloor * multiplier;
-        
-        // Ensure minimum threshold
-        float minThreshold = 0.02f;
-        // Ensure maximum threshold - if calibration captured speech/noise, cap it
-        float maxThreshold = 0.15f;
-        
-        if (_dynamicThreshold < minThreshold)
-        {
-            _dynamicThreshold = minThreshold;
-            _logger.LogWarning("Threshold too low, capping at minimum: {Min:F4}", minThreshold);
-        }
-        else if (_dynamicThreshold > maxThreshold)
-        {
-            _logger.LogWarning("Threshold too high ({Threshold:F4}), capping at maximum: {Max:F4}. Was there noise during calibration?", 
-                _dynamicThreshold, maxThreshold);
-            _dynamicThreshold = maxThreshold;
-        }
-        
-        _isCalibrated = true;
-        
-        _logger.LogInformation("═══════════════════════════════════════════════════════════════");
-        _logger.LogInformation("  🎚️ VAD CALIBRATION COMPLETE");
-        _logger.LogInformation("  Samples: {Count}", rmsValues.Count);
-        _logger.LogInformation("  Avg noise RMS: {Avg:F4}", avgRms);
-        _logger.LogInformation("  Max noise RMS: {Max:F4}", maxRms);
-        _logger.LogInformation("  Noise floor: {Floor:F4}", noiseFloor);
-        _logger.LogInformation("  New threshold: {Threshold:F4} (multiplier: {Mult:F1}x)", _dynamicThreshold, multiplier);
-        _logger.LogInformation("  Original threshold: {Original:F4}", _options.SilenceThreshold);
-        _logger.LogInformation("═══════════════════════════════════════════════════════════════");
-    }
-
-    /// <summary>
-    /// Calculates RMS (Root Mean Square) of audio data.
-    /// </summary>
-    /// <param name="pcmData">16-bit PCM audio data.</param>
-    /// <returns>RMS value normalized to 0.0 - 1.0 range.</returns>
-    public float CalculateRms(byte[] pcmData)
+    private static float[] PcmToFloat(byte[] pcmData)
     {
         int sampleCount = pcmData.Length / 2;
-        if (sampleCount == 0) return 0;
-
-        double sumSquares = 0;
-
+        float[] samples = new float[sampleCount];
+        
         for (int i = 0; i < sampleCount; i++)
         {
             short sample = BitConverter.ToInt16(pcmData, i * 2);
-            float normalized = sample / 32768.0f;
-            sumSquares += normalized * normalized;
+            samples[i] = sample / 32768.0f;
         }
-
-        return (float)Math.Sqrt(sumSquares / sampleCount);
+        
+        return samples;
     }
 
     /// <summary>
-    /// Detects if the audio chunk contains speech.
+    /// Detects if the audio chunk contains speech using Silero VAD.
     /// </summary>
-    /// <param name="pcmData">16-bit PCM audio data.</param>
+    /// <param name="pcmData">16-bit PCM audio data at 16kHz.</param>
     /// <returns>True if speech detected, false otherwise.</returns>
     public bool IsSpeech(byte[] pcmData)
     {
-        float rms = CalculateRms(pcmData);
-        return rms > _dynamicThreshold;
+        var (isSpeech, _) = Analyze(pcmData);
+        return isSpeech;
     }
 
     /// <summary>
-    /// Detects if the audio chunk contains speech and returns the RMS value.
+    /// Detects if the audio chunk contains speech and returns the probability.
     /// </summary>
-    /// <param name="pcmData">16-bit PCM audio data.</param>
-    /// <returns>Tuple of (isSpeech, rmsValue).</returns>
-    public (bool IsSpeech, float Rms) Analyze(byte[] pcmData)
+    /// <param name="pcmData">16-bit PCM audio data at 16kHz.</param>
+    /// <returns>Tuple of (isSpeech, probability 0.0-1.0).</returns>
+    public (bool IsSpeech, float Probability) Analyze(byte[] pcmData)
     {
-        float rms = CalculateRms(pcmData);
-        return (rms > _dynamicThreshold, rms);
+        // Convert PCM to float samples
+        var newSamples = PcmToFloat(pcmData);
+        _sampleBuffer.AddRange(newSamples);
+        
+        // Silero requires exactly 512 samples at 16kHz
+        if (_sampleBuffer.Count < SileroChunkSamples)
+        {
+            // Not enough samples yet, return no speech
+            return (false, 0.0f);
+        }
+        
+        // Process all complete 512-sample chunks
+        float maxProbability = 0.0f;
+        
+        while (_sampleBuffer.Count >= SileroChunkSamples)
+        {
+            // Extract 512 samples
+            var chunk = _sampleBuffer.Take(SileroChunkSamples).ToArray();
+            _sampleBuffer.RemoveRange(0, SileroChunkSamples);
+            
+            // Run inference
+            try
+            {
+                float[][] input = [chunk];
+                var result = _model.Call(input, _options.SampleRate);
+                
+                if (result.Length > 0)
+                {
+                    maxProbability = Math.Max(maxProbability, result[0]);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Silero VAD inference failed");
+                return (false, 0.0f);
+            }
+        }
+        
+        return (maxProbability > SpeechThreshold, maxProbability);
     }
 
     /// <summary>
-    /// Gets the current silence threshold (dynamic after calibration).
+    /// Resets the internal state of the VAD model.
+    /// Call this when starting a new recording session.
     /// </summary>
-    public float SilenceThreshold => _dynamicThreshold;
-    
+    public void Reset()
+    {
+        _model.ResetStates();
+        _sampleBuffer.Clear();
+    }
+
     /// <summary>
-    /// Gets whether the VAD has been calibrated.
+    /// Gets the speech detection threshold.
     /// </summary>
-    public bool IsCalibrated => _isCalibrated;
+    public float SpeechDetectionThreshold => SpeechThreshold;
+
+    public void Dispose()
+    {
+        _model?.Dispose();
+        GC.SuppressFinalize(this);
+    }
 }
