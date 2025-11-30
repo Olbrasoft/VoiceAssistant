@@ -42,7 +42,11 @@ public class CommandDispatcher
 
         try
         {
-            var result = await _textInputService.SendMessageToSessionAsync(command, agent, cancellationToken);
+            // Add mode prefix so the LLM knows which mode it's operating in
+            var modePrefix = agent == "plan" ? "[PLAN MODE - READ ONLY] " : "[BUILD MODE] ";
+            var messageWithPrefix = modePrefix + command;
+            
+            var result = await _textInputService.SendMessageToSessionAsync(messageWithPrefix, agent, cancellationToken);
             
             if (result)
             {
