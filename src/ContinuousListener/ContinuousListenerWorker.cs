@@ -298,7 +298,8 @@ public class ContinuousListenerWorker : BackgroundService
             var actionColor = routerResult.Action == LlmRouterAction.Ignore 
                 ? "\u001b[91;1m"  // Červená pro IGNORE
                 : "\u001b[92;1m"; // Zelená pro akce (OpenCode, Respond, Bash)
-            Console.WriteLine($"{actionColor}🎯 {_llmRouter.ProviderName}: {routerResult.Action.ToString().ToUpper()} (confidence: {routerResult.Confidence:F2}, {routerResult.ResponseTimeMs}ms)\u001b[0m");
+            var questionIndicator = routerResult.IsQuestion ? "❓" : "⚡";
+            Console.WriteLine($"{actionColor}🎯 {_llmRouter.ProviderName}: {routerResult.Action.ToString().ToUpper()} {questionIndicator} (confidence: {routerResult.Confidence:F2}, {routerResult.ResponseTimeMs}ms)\u001b[0m");
             
             if (!string.IsNullOrEmpty(routerResult.Reason))
             {
@@ -342,19 +343,16 @@ public class ContinuousListenerWorker : BackgroundService
 
     private async Task HandleOpenCodeActionAsync(string command, bool isQuestion, CancellationToken cancellationToken)
     {
-        if (isQuestion)
-        {
-            // Questions: send with PLAN MODE prefix and don't auto-submit
-            // This allows user to review OpenCode's plan before execution
-            Console.WriteLine($"\u001b[96;1m❓ Question detected - sending in PLAN MODE\u001b[0m");
-            var planModeCommand = $"PLAN MODE: {command}";
-            await _dispatcher.DispatchAsync(planModeCommand, submitPrompt: false, cancellationToken);
-        }
-        else
-        {
-            // Commands: send directly and auto-submit for immediate execution
-            await _dispatcher.DispatchAsync(command, submitPrompt: true, cancellationToken);
-        }
+        // Use Session API with appropriate agent
+        // - plan: for questions (no tool execution, only answers)
+        // - build: for commands (full tool access, executes actions)
+        var agent = isQuestion ? "plan" : "build";
+        var agentColor = isQuestion ? "\u001b[96;1m" : "\u001b[93;1m"; // Cyan for plan, Yellow for build
+        var agentIcon = isQuestion ? "❓" : "⚡";
+        
+        Console.WriteLine($"{agentColor}{agentIcon} Sending to OpenCode with agent: {agent}\u001b[0m");
+        
+        await _dispatcher.DispatchToSessionAsync(command, agent, cancellationToken);
     }
 
     private async Task HandleRespondActionAsync(string? response, CancellationToken cancellationToken)
