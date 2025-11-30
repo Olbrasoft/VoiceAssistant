@@ -24,8 +24,13 @@ public class SpeechLockCreateCommandHandler
             Context.SpeechLocks.RemoveRange(existingLocks);
         }
 
-        // Create new lock - CreatedAt is set by database default
-        var entity = new SpeechLockEntity();
+        // Create new lock with source and reason from command
+        var entity = new SpeechLockEntity
+        {
+            CreatedAt = DateTime.UtcNow,
+            SourceId = (int)command.Source,
+            Reason = command.Reason
+        };
         
         await InsertAsync(entity, token);
 

@@ -5,6 +5,7 @@ using Olbrasoft.VoiceAssistant.Shared.Input;
 using Olbrasoft.VoiceAssistant.Shared.Speech;
 using Olbrasoft.VoiceAssistant.Shared.TextInput;
 using VoiceAssistant.Shared.Data.Commands;
+using VoiceAssistant.Shared.Data.Commands.SpeechLockCommands;
 using VoiceAssistant.Shared.Data.Enums;
 
 namespace Olbrasoft.VoiceAssistant.PushToTalkDictation.Service;
@@ -29,6 +30,7 @@ public class DictationWorker : BackgroundService
     private DateTime? _recordingStartTime;
     private KeyCode _triggerKey;
     private readonly string _ttsBaseUrl;
+    private int? _speechLockId;
     
     /// <summary>
     /// Path to the speech lock file. When this file exists, TTS should not speak.
@@ -156,11 +158,15 @@ public class DictationWorker : BackgroundService
 
             _logger.LogInformation("Starting audio recording...");
             
-            // Stop any TTS speech immediately
-            await StopTtsSpeechAsync();
+            // CRITICAL: Stop TTS and create lock SYNCHRONOUSLY before anything else
+            // This ensures TTS is stopped immediately when CapsLock is pressed
+            // Note: EdgeTTS also polls CapsLock LED every 100ms as a backup
             
-            // Create speech lock file to prevent TTS from speaking during recording
-            CreateSpeechLockFile();
+            // Stop any TTS speech immediately (fire-and-forget but don't await)
+            _ = StopTtsSpeechAsync();
+            
+            // Create speech lock synchronously to prevent TTS from speaking during recording
+            await CreateSpeechLockAsync();
             
             // Notify clients about recording start
             await _pttNotifier.NotifyRecordingStartedAsync();
@@ -257,43 +263,73 @@ public class DictationWorker : BackgroundService
             _isRecording = false;
             _recordingStartTime = null;
             
-            // Delete speech lock file to allow TTS to speak again
-            DeleteSpeechLockFile();
+            // Delete speech lock to allow TTS to speak again
+            await DeleteSpeechLockAsync();
         }
     }
     
     /// <summary>
     /// Creates the speech lock file to signal TTS to not speak.
+    /// Also creates a database lock for EdgeTTS WebSocket Server.
     /// </summary>
-    private void CreateSpeechLockFile()
+    private async Task CreateSpeechLockAsync()
     {
         try
         {
-            File.WriteAllText(SpeechLockFilePath, DateTime.UtcNow.ToString("O"));
+            // Create file lock for backward compatibility
+            File.WriteAllText(SpeechLockFilePath, "PushToTalk:Recording");
             _logger.LogDebug("Speech lock file created: {Path}", SpeechLockFilePath);
+            
+            // Create database lock for EdgeTTS WebSocket Server
+            var command = new SpeechLockCreateCommand
+            {
+                Source = SpeechLockSource.PushToTalk,
+                Reason = "Recording"
+            };
+            
+            _speechLockId = await _mediator.MediateAsync<int>(command);
+            _logger.LogInformation("🔒 Speech lock created in database (ID: {LockId})", _speechLockId);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to create speech lock file: {Path}", SpeechLockFilePath);
+            _logger.LogWarning(ex, "Failed to create speech lock");
         }
     }
     
     /// <summary>
     /// Deletes the speech lock file to allow TTS to speak again.
+    /// Also removes the database lock.
     /// </summary>
-    private void DeleteSpeechLockFile()
+    private async Task DeleteSpeechLockAsync()
     {
         try
         {
+            // Remove file lock
             if (File.Exists(SpeechLockFilePath))
             {
                 File.Delete(SpeechLockFilePath);
                 _logger.LogDebug("Speech lock file deleted: {Path}", SpeechLockFilePath);
             }
+            
+            // Remove database lock
+            if (_speechLockId.HasValue)
+            {
+                var command = new SpeechLockDeleteCommand { Id = _speechLockId.Value };
+                await _mediator.MediateAsync(command);
+                _logger.LogInformation("🔓 Speech lock deleted from database (ID: {LockId})", _speechLockId);
+                _speechLockId = null;
+            }
+            else
+            {
+                // Delete any existing locks (cleanup)
+                var command = new SpeechLockDeleteCommand();
+                await _mediator.MediateAsync(command);
+                _logger.LogDebug("All speech locks cleaned up");
+            }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to delete speech lock file: {Path}", SpeechLockFilePath);
+            _logger.LogWarning(ex, "Failed to delete speech lock");
         }
     }
 

@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Logging;
 using Olbrasoft.VoiceAssistant.Shared.Speech;
 
 namespace Olbrasoft.VoiceAssistant.ContinuousListener.Services;

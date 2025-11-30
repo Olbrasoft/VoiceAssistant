@@ -9,6 +9,11 @@ namespace VoiceAssistant.Shared.Data.Commands.SpeechLockCommands;
 /// </summary>
 public class SpeechLockDeleteCommand : VoiceAssistantCommand
 {
+    /// <summary>
+    /// Optional: specific lock ID to delete. If not set (0), all locks are deleted.
+    /// </summary>
+    public new int Id { get; set; }
+
     public SpeechLockDeleteCommand(ICommandExecutor executor) : base(executor)
     {
     }

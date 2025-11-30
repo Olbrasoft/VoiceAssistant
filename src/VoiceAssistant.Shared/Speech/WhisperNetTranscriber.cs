@@ -73,7 +73,10 @@ public class WhisperNetTranscriber : ISpeechTranscriber
                 .ParentBuilder
                 // Lower temperature = more deterministic output
                 .WithTemperature(0.0f)
-                // No prompt - it was leaking into short transcriptions
+                // CRITICAL: Disable context between transcriptions to prevent hallucinations
+                // Without this, Whisper uses previous transcription as prompt for next one,
+                // causing it to "hallucinate" and repeat previous text in new transcriptions
+                .WithNoContext()
                 .Build();
 
             _logger.LogInformation("Whisper.net initialized successfully, language: {Language}", _language);

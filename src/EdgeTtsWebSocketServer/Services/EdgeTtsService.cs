@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Diagnostics;
+using System.Net.Http.Json;
 using Olbrasoft.Mediation;
 using VoiceAssistant.Shared.Data.Queries.SpeechLockQueries;
 
@@ -20,21 +21,32 @@ public class EdgeTtsService
     private readonly string _speechLockFile;
     private readonly string _defaultVoice;
     private readonly string _defaultRate;
+    private readonly string _listenerApiUrl;
     private readonly ILogger<EdgeTtsService> _logger;
     private readonly IServiceProvider _serviceProvider;
+    private readonly AssistantSpeechStateService _assistantSpeechState;
+    private readonly HttpClient _httpClient;
     
     // Current playback process for stop functionality
     private Process? _currentPlaybackProcess;
     private readonly object _processLock = new();
 
-    public EdgeTtsService(IConfiguration configuration, ILogger<EdgeTtsService> logger, IServiceProvider serviceProvider)
+    public EdgeTtsService(
+        IConfiguration configuration, 
+        ILogger<EdgeTtsService> logger, 
+        IServiceProvider serviceProvider,
+        AssistantSpeechStateService assistantSpeechState,
+        HttpClient httpClient)
     {
         _logger = logger;
         _serviceProvider = serviceProvider;
+        _assistantSpeechState = assistantSpeechState;
+        _httpClient = httpClient;
         _cacheDirectory = ExpandPath(configuration["EdgeTts:CacheDirectory"] ?? "~/.cache/edge-tts-server");
         _speechLockFile = configuration["EdgeTts:SpeechLockFile"] ?? "/tmp/speech.lock";
         _defaultVoice = configuration["EdgeTts:DefaultVoice"] ?? "cs-CZ-AntoninNeural";
         _defaultRate = configuration["EdgeTts:DefaultRate"] ?? "+20%";
+        _listenerApiUrl = configuration["EdgeTts:ListenerApiUrl"] ?? "http://localhost:5051";
         
         Directory.CreateDirectory(_cacheDirectory);
     }
@@ -59,6 +71,88 @@ public class EdgeTtsService
         }
     }
 
+    /// <summary>
+    /// Check if CapsLock LED is currently ON (user is recording via push-to-talk).
+    /// This is a direct hardware check as a backup to database lock.
+    /// </summary>
+    private bool IsCapsLockOn()
+    {
+        try
+        {
+            // Check all potential CapsLock LED paths
+            var ledPaths = new[]
+            {
+                "/sys/class/leds/input0::capslock/brightness",
+                "/sys/class/leds/input1::capslock/brightness",
+                "/sys/class/leds/input2::capslock/brightness",
+                "/sys/class/leds/input3::capslock/brightness"
+            };
+
+            foreach (var path in ledPaths)
+            {
+                if (File.Exists(path))
+                {
+                    var value = File.ReadAllText(path).Trim();
+                    if (value == "1")
+                    {
+                        _logger.LogDebug("CapsLock LED is ON (checked {Path})", path);
+                        return true;
+                    }
+                }
+            }
+
+            // Also try dynamic discovery
+            if (Directory.Exists("/sys/class/leds"))
+            {
+                foreach (var dir in Directory.GetDirectories("/sys/class/leds"))
+                {
+                    if (dir.Contains("capslock", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var brightnessFile = Path.Combine(dir, "brightness");
+                        if (File.Exists(brightnessFile))
+                        {
+                            var value = File.ReadAllText(brightnessFile).Trim();
+                            if (value == "1")
+                            {
+                                _logger.LogDebug("CapsLock LED is ON (discovered {Path})", brightnessFile);
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not check CapsLock LED state");
+            return false; // Fail open - allow speech if check fails
+        }
+    }
+
+    /// <summary>
+    /// Check if speech should be blocked (either by DB lock or CapsLock state).
+    /// </summary>
+    private async Task<bool> ShouldBlockSpeechAsync()
+    {
+        // Check 1: Database lock (set by PTT service)
+        if (await IsSpeechLockedAsync())
+        {
+            _logger.LogDebug("Speech blocked: DB lock exists");
+            return true;
+        }
+
+        // Check 2: Direct CapsLock LED state (backup check)
+        if (IsCapsLockOn())
+        {
+            _logger.LogDebug("Speech blocked: CapsLock LED is ON");
+            return true;
+        }
+
+        return false;
+    }
+
     public async Task<(bool success, string message, bool cached)> SpeakAsync(
         string text, 
         string? voice = null, 
@@ -69,11 +163,11 @@ public class EdgeTtsService
     {
         try
         {
-            // Check speech lock from database
-            if (await IsSpeechLockedAsync())
+            // Check speech lock from database or CapsLock - if locked, silently skip TTS
+            if (await ShouldBlockSpeechAsync())
             {
-                _logger.LogInformation("🔒 Speech locked (user recording) - skipping TTS: {Text}", text);
-                return (true, $"🔒 Speech locked - text only: {text}", false);
+                _logger.LogInformation("Speech blocked - skipping TTS for: {Text}", text);
+                return (true, string.Empty, false);
             }
 
             voice ??= _defaultVoice;
@@ -91,7 +185,7 @@ public class EdgeTtsService
                 _logger.LogInformation("Playing from cache: {Text}", text);
                 if (play)
                 {
-                    await PlayAudioAsync(cacheFilePath);
+                    await PlayAudioAsync(cacheFilePath, text);
                     return (true, $"✅ Played from cache: {text}", true);
                 }
                 return (true, $"✅ Audio cached at: {cacheFilePath}", true);
@@ -112,7 +206,7 @@ public class EdgeTtsService
             // Play audio
             if (play)
             {
-                await PlayAudioAsync(cacheFilePath);
+                await PlayAudioAsync(cacheFilePath, text);
                 return (true, $"✅ Generated and played: {text}", false);
             }
 
@@ -282,13 +376,19 @@ public class EdgeTtsService
         return $"{safeName}-{hash}.mp3";
     }
 
-    private async Task PlayAudioAsync(string audioFile)
+    private async Task PlayAudioAsync(string audioFile, string spokenText)
     {
         // Acquire speech lock
         using var lockFile = new FileStream(_speechLockFile, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         
         try
         {
+            // Mark assistant as speaking BEFORE playback
+            await _assistantSpeechState.StartSpeakingAsync();
+            
+            // Notify ContinuousListener what we're about to say
+            await NotifyListenerSpeechStartAsync(spokenText);
+            
             var process = new Process
             {
                 StartInfo = new ProcessStartInfo
@@ -308,10 +408,43 @@ public class EdgeTtsService
             }
 
             process.Start();
-            await process.WaitForExitAsync();
+            
+            // Poll every 100ms during playback to check if we should stop
+            while (!process.HasExited)
+            {
+                // Check if CapsLock is pressed (user wants to speak)
+                if (IsCapsLockOn())
+                {
+                    _logger.LogInformation("CapsLock detected during playback - stopping TTS immediately");
+                    try
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Error killing ffplay process");
+                    }
+                    break;
+                }
+                
+                // Wait 100ms before next check
+                await Task.Delay(100);
+            }
+            
+            // If process is still running, wait for it to finish
+            if (!process.HasExited)
+            {
+                await process.WaitForExitAsync();
+            }
         }
         finally
         {
+            // Notify ContinuousListener that we stopped speaking
+            await NotifyListenerSpeechEndAsync();
+            
+            // Mark assistant as NOT speaking AFTER playback
+            await _assistantSpeechState.StopSpeakingAsync();
+            
             lock (_processLock)
             {
                 _currentPlaybackProcess = null;
@@ -319,6 +452,51 @@ public class EdgeTtsService
             
             lockFile.Close();
             File.Delete(_speechLockFile);
+        }
+    }
+    
+    /// <summary>
+    /// Notifies ContinuousListener that assistant is starting to speak.
+    /// </summary>
+    private async Task NotifyListenerSpeechStartAsync(string text)
+    {
+        try
+        {
+            var response = await _httpClient.PostAsJsonAsync(
+                $"{_listenerApiUrl}/api/assistant-speech/start", 
+                new { text });
+            
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Failed to notify listener of speech start: {Status}", response.StatusCode);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Don't fail TTS if listener notification fails
+            _logger.LogDebug(ex, "Could not notify listener of speech start (listener may not be running)");
+        }
+    }
+    
+    /// <summary>
+    /// Notifies ContinuousListener that assistant stopped speaking.
+    /// </summary>
+    private async Task NotifyListenerSpeechEndAsync()
+    {
+        try
+        {
+            var response = await _httpClient.PostAsync(
+                $"{_listenerApiUrl}/api/assistant-speech/end", null);
+            
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Failed to notify listener of speech end: {Status}", response.StatusCode);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Don't fail TTS if listener notification fails
+            _logger.LogDebug(ex, "Could not notify listener of speech end (listener may not be running)");
         }
     }
 

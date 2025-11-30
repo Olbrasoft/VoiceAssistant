@@ -23,34 +23,25 @@ public class ContinuousListenerOptions
     public int PreBufferMs { get; set; } = 1000;
 
     /// <summary>
-    /// Post-silence duration to end recording in milliseconds. Default: 600ms.
+    /// Post-silence duration to end recording in milliseconds. Default: 1500ms.
+    /// With Groq Router, we wait longer to capture complete utterances.
     /// </summary>
-    public int PostSilenceMs { get; set; } = 600;
+    public int PostSilenceMs { get; set; } = 1500;
 
     /// <summary>
-    /// Minimum recording duration in milliseconds. Default: 500ms.
+    /// Minimum recording duration in milliseconds. Default: 800ms.
     /// </summary>
-    public int MinRecordingMs { get; set; } = 500;
+    public int MinRecordingMs { get; set; } = 800;
 
     /// <summary>
-    /// RMS threshold for speech detection. Default: 0.08.
+    /// Path to Silero VAD ONNX model file.
     /// </summary>
-    public float SilenceThreshold { get; set; } = 0.08f;
+    public string SileroVadModelPath { get; set; } = "/home/jirka/voice-assistant/models/silero_vad.onnx";
 
     /// <summary>
-    /// Wake words to detect (case-insensitive).
+    /// Path to Whisper model file for transcription.
     /// </summary>
-    public string[] WakeWords { get; set; } = ["opencode", "open code", "počítači"];
-
-    /// <summary>
-    /// Path to Whisper model file (accurate, used for full command transcription).
-    /// </summary>
-    public string WhisperModelPath { get; set; } = "/home/jirka/voice-assistant/push-to-talk-dictation/models/ggml-medium.bin";
-
-    /// <summary>
-    /// Path to fast Whisper model file (used for quick wake word detection).
-    /// </summary>
-    public string WhisperFastModelPath { get; set; } = "/home/jirka/voice-assistant/push-to-talk-dictation/models/ggml-base.bin";
+    public string WhisperModelPath { get; set; } = "/home/jirka/voice-assistant/automatic-speech-recognition-models/ggml-medium.bin";
 
     /// <summary>
     /// Language for Whisper transcription.
@@ -58,52 +49,10 @@ public class ContinuousListenerOptions
     public string WhisperLanguage { get; set; } = "cs";
 
     /// <summary>
-    /// Path to directory with "počítači" wake word audio responses.
+    /// Maximum audio segment duration for transcription in milliseconds. Default: 60000ms (60 seconds).
+    /// Longer audio will be truncated to prevent Whisper.net issues.
     /// </summary>
-    public string ComputerResponsesPath { get; set; } = "/home/jirka/voice-assistant/voice-output/computer-responses";
-
-    /// <summary>
-    /// Path to directory with "opencode" wake word audio responses.
-    /// </summary>
-    public string OpenCodeResponsesPath { get; set; } = "/home/jirka/voice-assistant/voice-output/opencode-responses";
-
-    /// <summary>
-    /// Wake words that should play an audio acknowledgment response.
-    /// These are "system" wake words that respond with voice but don't dispatch to OpenCode.
-    /// </summary>
-    public string[] AudioResponseWakeWords { get; set; } = ["počítači"];
-
-    /// <summary>
-    /// Wake words that dispatch commands to OpenCode.
-    /// </summary>
-    public string[] OpenCodeWakeWords { get; set; } = ["opencode", "open code"];
-
-    /// <summary>
-    /// Post-silence duration after OpenCode wake word to collect full command (ms). Default: 2500ms.
-    /// </summary>
-    public int OpenCodePostSilenceMs { get; set; } = 2500;
-
-    /// <summary>
-    /// Maximum audio segment duration for transcription in milliseconds. Default: 10000ms (10 seconds).
-    /// Longer audio will be split into smaller chunks to prevent Whisper.net crashes.
-    /// </summary>
-    public int MaxSegmentMs { get; set; } = 10000;
-
-    /// <summary>
-    /// Whether to calibrate VAD threshold at startup by measuring ambient noise. Default: true.
-    /// </summary>
-    public bool CalibrateOnStartup { get; set; } = true;
-
-    /// <summary>
-    /// Duration of calibration period in milliseconds. Default: 2000ms (2 seconds).
-    /// </summary>
-    public int CalibrationDurationMs { get; set; } = 2000;
-
-    /// <summary>
-    /// Multiplier for threshold above measured noise floor. Default: 1.8.
-    /// Higher values = less sensitive (fewer false triggers), lower = more sensitive.
-    /// </summary>
-    public float CalibrationMultiplier { get; set; } = 1.8f;
+    public int MaxSegmentMs { get; set; } = 60000;
 
     // Computed properties
     public int ChunkSizeBytes => SampleRate * VadChunkMs / 1000 * 2; // 16-bit = 2 bytes per sample

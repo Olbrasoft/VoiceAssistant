@@ -1,6 +1,4 @@
 using NAudio.Dsp;
-using System;
-using System.IO;
 
 namespace Olbrasoft.VoiceAssistant.Shared.Speech;
 

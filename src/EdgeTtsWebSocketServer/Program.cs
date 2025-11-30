@@ -9,8 +9,11 @@ builder.Services.AddControllers();
 // Register VoiceAssistant data services (DbContext, Mediator, CQRS handlers)
 builder.Services.AddVoiceAssistantData(builder.Configuration);
 
-// Register EdgeTtsService as singleton
-builder.Services.AddSingleton<EdgeTtsService>();
+// Register AssistantSpeechStateService
+builder.Services.AddSingleton<AssistantSpeechStateService>();
+
+// Register HttpClient for EdgeTtsService to communicate with ContinuousListener
+builder.Services.AddHttpClient<EdgeTtsService>();
 
 // Configure Kestrel to listen on specific port
 builder.WebHost.ConfigureKestrel(options =>

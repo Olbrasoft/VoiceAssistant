@@ -32,8 +32,6 @@ public class TextInputService
     /// <returns>True if text was sent successfully, false otherwise.</returns>
     public async Task<bool> TypeTextAsync(string text, bool submitPrompt = false, CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("🚀 TypeTextAsync called with text: '{Text}', submit: {Submit}", text, submitPrompt);
-        
         if (string.IsNullOrWhiteSpace(text))
         {
             _logger.LogWarning("Cannot send empty text");
@@ -42,14 +40,11 @@ public class TextInputService
 
         // Try OpenCode API first
         var openCodeUrl = _configuration["OpenCodeUrl"] ?? "http://localhost:4096";
-        _logger.LogInformation("🔍 OpenCodeUrl from config: {Url}", openCodeUrl);
         
         var httpResult = await SendToOpenCodeAsync(openCodeUrl, text, submitPrompt, cancellationToken);
-        _logger.LogInformation("🔍 SendToOpenCodeAsync returned: {Result}", httpResult);
         
         if (httpResult)
         {
-            _logger.LogInformation("✅ HTTP method succeeded, returning true");
             return true;
         }
 
@@ -66,29 +61,20 @@ public class TextInputService
     {
         try
         {
-            _logger.LogInformation("📡 Attempting to send to OpenCode at {Url}: {Text} (submit: {Submit})", baseUrl, text, submitPrompt);
-
             // Step 1: Append text to prompt
             var appendEndpoint = $"{baseUrl.TrimEnd('/')}/tui/append-prompt";
-            _logger.LogInformation("📡 Endpoint URL: {Endpoint}", appendEndpoint);
             
             var payload = new { text };
             var json = JsonSerializer.Serialize(payload);
             var content = new StringContent(json, Encoding.UTF8, "application/json");
-            
-            _logger.LogInformation("📡 Payload: {Payload}", json);
 
             var response = await _httpClient.PostAsync(appendEndpoint, content, cancellationToken);
-            
-            _logger.LogInformation("📡 Response status: {StatusCode}", response.StatusCode);
 
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning("OpenCode API returned {StatusCode}", response.StatusCode);
                 return false;
             }
-
-            _logger.LogInformation("✅ Text sent to OpenCode successfully");
 
             // Step 2: Submit prompt if requested
             if (submitPrompt)
@@ -98,11 +84,7 @@ public class TextInputService
                 var submitEndpoint = $"{baseUrl.TrimEnd('/')}/tui/submit-prompt";
                 var submitResponse = await _httpClient.PostAsync(submitEndpoint, null, cancellationToken);
 
-                if (submitResponse.IsSuccessStatusCode)
-                {
-                    _logger.LogInformation("✅ Prompt submitted in OpenCode");
-                }
-                else
+                if (!submitResponse.IsSuccessStatusCode)
                 {
                     _logger.LogWarning("Failed to submit prompt: {StatusCode}", submitResponse.StatusCode);
                 }
@@ -135,8 +117,6 @@ public class TextInputService
     {
         try
         {
-            _logger.LogInformation("⌨️  Typing with xdotool: {Text} (submit: {Submit})", text, submitPrompt);
-
             var processStartInfo = new ProcessStartInfo
             {
                 FileName = "xdotool",
@@ -163,8 +143,6 @@ public class TextInputService
                 return false;
             }
 
-            _logger.LogInformation("✅ Text typed successfully with xdotool");
-
             // Submit with Enter key if requested
             if (submitPrompt)
             {
@@ -183,7 +161,6 @@ public class TextInputService
                 if (enterProcess != null)
                 {
                     await enterProcess.WaitForExitAsync(cancellationToken);
-                    _logger.LogInformation("✅ Enter key pressed");
                 }
             }
 

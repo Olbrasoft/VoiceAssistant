@@ -7,11 +7,11 @@ namespace Olbrasoft.VoiceAssistant.ContinuousListener.Services;
 
 /// <summary>
 /// Service for managing speech locks to prevent TTS from speaking while user is recording.
-/// Uses both database (for future extensibility) and file lock (for bash script compatibility).
+/// Locks are stored in database with automatic expiration after timeout.
 /// </summary>
 public class SpeechLockService
 {
-    private const string FileLockPath = "/tmp/speech-lock";
+    private const int LockTimeoutSeconds = 30;
     
     private readonly ILogger<SpeechLockService> _logger;
     private readonly IServiceProvider _serviceProvider;
@@ -26,15 +26,10 @@ public class SpeechLockService
     /// <summary>
     /// Acquires a speech lock to prevent TTS from speaking.
     /// </summary>
-    /// <param name="reason">Optional reason for the lock.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
     public async Task<bool> LockAsync(string? reason = null, CancellationToken cancellationToken = default)
     {
         try
         {
-            // Create file lock for bash script compatibility
-            await File.WriteAllTextAsync(FileLockPath, $"ContinuousListener:{reason ?? "recording"}", cancellationToken);
-            
             using var scope = _serviceProvider.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<VoiceAssistantDbContext>();
 
@@ -65,15 +60,9 @@ public class SpeechLockService
     {
         try
         {
-            // Remove file lock
-            if (File.Exists(FileLockPath))
-            {
-                File.Delete(FileLockPath);
-            }
-            
             if (_currentLockId == null)
             {
-                _logger.LogDebug("No DB lock to release");
+                _logger.LogDebug("No lock to release");
                 return true;
             }
 
@@ -99,30 +88,78 @@ public class SpeechLockService
     }
 
     /// <summary>
-    /// Cleans up any stale locks (older than 30 seconds).
+    /// Checks if there is any active (non-expired) speech lock.
+    /// Lock is valid only if CreatedAt + timeout > now.
     /// </summary>
-    public async Task CleanupStaleLocks(CancellationToken cancellationToken = default)
+    public async Task<bool> IsLockedAsync(CancellationToken cancellationToken = default)
     {
         try
         {
             using var scope = _serviceProvider.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<VoiceAssistantDbContext>();
 
-            var cutoff = DateTime.UtcNow.AddSeconds(-30);
-            var staleLocks = await db.SpeechLocks
-                .Where(l => l.CreatedAt < cutoff)
+            var cutoff = DateTime.UtcNow.AddSeconds(-LockTimeoutSeconds);
+            
+            // Check if any valid (non-expired) lock exists
+            return await db.SpeechLocks
+                .AnyAsync(l => l.CreatedAt > cutoff, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to check speech lock status");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Gets all active (non-expired) speech locks.
+    /// </summary>
+    public async Task<List<SpeechLockEntity>> GetActiveLocksAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<VoiceAssistantDbContext>();
+
+            var cutoff = DateTime.UtcNow.AddSeconds(-LockTimeoutSeconds);
+            
+            return await db.SpeechLocks
+                .Where(l => l.CreatedAt > cutoff)
+                .ToListAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get active locks");
+            return new List<SpeechLockEntity>();
+        }
+    }
+
+    /// <summary>
+    /// Cleans up all expired locks from database.
+    /// </summary>
+    public async Task CleanupExpiredLocksAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<VoiceAssistantDbContext>();
+
+            var cutoff = DateTime.UtcNow.AddSeconds(-LockTimeoutSeconds);
+            
+            var expiredLocks = await db.SpeechLocks
+                .Where(l => l.CreatedAt <= cutoff)
                 .ToListAsync(cancellationToken);
 
-            if (staleLocks.Count > 0)
+            if (expiredLocks.Count > 0)
             {
-                db.SpeechLocks.RemoveRange(staleLocks);
+                db.SpeechLocks.RemoveRange(expiredLocks);
                 await db.SaveChangesAsync(cancellationToken);
-                _logger.LogInformation("🧹 Cleaned up {Count} stale speech locks", staleLocks.Count);
+                _logger.LogInformation("🧹 Cleaned up {Count} expired speech locks", expiredLocks.Count);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to cleanup stale locks");
+            _logger.LogError(ex, "Failed to cleanup expired locks");
         }
     }
 }
