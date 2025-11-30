@@ -55,7 +55,7 @@ public class TextInputService
 
     /// <summary>
     /// Sends a message directly to OpenCode session with specified agent.
-    /// This bypasses the TUI and sends directly via Session API.
+    /// Fire-and-forget: sends request and returns immediately without waiting for LLM response.
     /// </summary>
     /// <param name="text">Message text to send.</param>
     /// <param name="agent">Agent to use: "plan" for questions, "build" for commands.</param>
@@ -77,11 +77,11 @@ public class TextInputService
             var sessionId = await GetActiveSessionIdAsync(openCodeUrl, cancellationToken);
             if (string.IsNullOrEmpty(sessionId))
             {
-                _logger.LogWarning("No active OpenCode session found, falling back to TUI API");
-                return await TypeTextAsync(text, submitPrompt: true, cancellationToken);
+                _logger.LogWarning("No active OpenCode session found");
+                return false;
             }
 
-            // Step 2: Send message to session
+            // Step 2: Send message - fire and forget, don't wait for response
             var messageEndpoint = $"{openCodeUrl.TrimEnd('/')}/session/{sessionId}/message";
             
             var payload = new
@@ -95,27 +95,16 @@ public class TextInputService
 
             _logger.LogInformation("📤 Sending message to session {SessionId} with agent '{Agent}'", sessionId, agent);
             
-            var response = await _httpClient.PostAsync(messageEndpoint, content, cancellationToken);
-
-            if (response.IsSuccessStatusCode)
-            {
-                _logger.LogInformation("✅ Message sent successfully via Session API");
-                return true;
-            }
-
-            var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
-            _logger.LogWarning("Session API returned {StatusCode}: {Error}", response.StatusCode, errorBody);
+            // Fire and forget - send request, don't await response
+            _ = _httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Post, messageEndpoint) { Content = content }, cancellationToken);
             
-            // Fallback to TUI API
-            _logger.LogInformation("Falling back to TUI API...");
-            return await TypeTextAsync(text, submitPrompt: true, cancellationToken);
+            _logger.LogInformation("✅ Message sent via Session API (fire-and-forget)");
+            return true;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "❌ Failed to send message via Session API: {Message}", ex.Message);
-            // Fallback to TUI API - use new cancellation token since original might be cancelled
-            _logger.LogInformation("⚠️ Falling back to TUI API...");
-            return await TypeTextAsync(text, submitPrompt: true, CancellationToken.None);
+            return false;
         }
     }
 

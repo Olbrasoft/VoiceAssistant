@@ -352,6 +352,11 @@ public class ContinuousListenerWorker : BackgroundService
         
         Console.WriteLine($"{agentColor}{agentIcon} Sending to OpenCode with agent: {agent}\u001b[0m");
         
+        // Release speech lock BEFORE sending to OpenCode
+        // Session API may take long time (waiting for LLM response)
+        // and we don't want to block TTS during that time
+        await _speechLock.UnlockAsync(cancellationToken);
+        
         await _dispatcher.DispatchToSessionAsync(command, agent, cancellationToken);
     }
 
