@@ -54,6 +54,112 @@ public class TextInputService
     }
 
     /// <summary>
+    /// Sends a message directly to OpenCode session with specified agent.
+    /// This bypasses the TUI and sends directly via Session API.
+    /// </summary>
+    /// <param name="text">Message text to send.</param>
+    /// <param name="agent">Agent to use: "plan" for questions, "build" for commands.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>True if message was sent successfully, false otherwise.</returns>
+    public async Task<bool> SendMessageToSessionAsync(string text, string agent = "build", CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            _logger.LogWarning("Cannot send empty message");
+            return false;
+        }
+
+        var openCodeUrl = _configuration["OpenCodeUrl"] ?? "http://localhost:4096";
+
+        try
+        {
+            // Step 1: Get active session ID
+            var sessionId = await GetActiveSessionIdAsync(openCodeUrl, cancellationToken);
+            if (string.IsNullOrEmpty(sessionId))
+            {
+                _logger.LogWarning("No active OpenCode session found, falling back to TUI API");
+                return await TypeTextAsync(text, submitPrompt: true, cancellationToken);
+            }
+
+            // Step 2: Send message to session
+            var messageEndpoint = $"{openCodeUrl.TrimEnd('/')}/session/{sessionId}/message";
+            
+            var payload = new
+            {
+                parts = new[] { new { type = "text", text } },
+                agent
+            };
+            
+            var json = JsonSerializer.Serialize(payload);
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+            _logger.LogInformation("📤 Sending message to session {SessionId} with agent '{Agent}'", sessionId, agent);
+            
+            var response = await _httpClient.PostAsync(messageEndpoint, content, cancellationToken);
+
+            if (response.IsSuccessStatusCode)
+            {
+                _logger.LogInformation("✅ Message sent successfully via Session API");
+                return true;
+            }
+
+            var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+            _logger.LogWarning("Session API returned {StatusCode}: {Error}", response.StatusCode, errorBody);
+            
+            // Fallback to TUI API
+            _logger.LogInformation("Falling back to TUI API...");
+            return await TypeTextAsync(text, submitPrompt: true, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Failed to send message via Session API: {Message}", ex.Message);
+            // Fallback to TUI API
+            return await TypeTextAsync(text, submitPrompt: true, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Gets the active session ID from OpenCode.
+    /// </summary>
+    private async Task<string?> GetActiveSessionIdAsync(string baseUrl, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var sessionsEndpoint = $"{baseUrl.TrimEnd('/')}/session";
+            var response = await _httpClient.GetAsync(sessionsEndpoint, cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Failed to get sessions: {StatusCode}", response.StatusCode);
+                return null;
+            }
+
+            var json = await response.Content.ReadAsStringAsync(cancellationToken);
+            
+            // Parse JSON to find active session
+            using var doc = JsonDocument.Parse(json);
+            
+            // The API returns an array of sessions, we take the first one (most recent/active)
+            if (doc.RootElement.ValueKind == JsonValueKind.Array && doc.RootElement.GetArrayLength() > 0)
+            {
+                var firstSession = doc.RootElement[0];
+                if (firstSession.TryGetProperty("id", out var idProperty))
+                {
+                    return idProperty.GetString();
+                }
+            }
+
+            _logger.LogWarning("No sessions found in OpenCode");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get active session ID");
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Sends text to OpenCode via HTTP POST to /tui/append-prompt endpoint.
     /// Optionally submits the prompt with /tui/submit-prompt.
     /// </summary>
