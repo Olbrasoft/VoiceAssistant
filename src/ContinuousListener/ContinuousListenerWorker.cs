@@ -311,7 +311,7 @@ public class ContinuousListenerWorker : BackgroundService
             switch (routerResult.Action)
             {
                 case LlmRouterAction.OpenCode:
-                    await HandleOpenCodeActionAsync(text, cancellationToken);
+                    await HandleOpenCodeActionAsync(text, routerResult.IsQuestion, cancellationToken);
                     break;
 
                 case LlmRouterAction.Respond:
@@ -322,7 +322,7 @@ public class ContinuousListenerWorker : BackgroundService
                     // Bash actions are now redirected to OpenCode
                     // OpenCode has full context and can execute commands properly
                     Console.WriteLine($"\u001b[93;1m⚠️ Bash action redirected to OpenCode\u001b[0m");
-                    await HandleOpenCodeActionAsync(text, cancellationToken);
+                    await HandleOpenCodeActionAsync(text, routerResult.IsQuestion, cancellationToken);
                     break;
 
                 case LlmRouterAction.Ignore:
@@ -340,12 +340,21 @@ public class ContinuousListenerWorker : BackgroundService
         }
     }
 
-    private async Task HandleOpenCodeActionAsync(string command, CancellationToken cancellationToken)
+    private async Task HandleOpenCodeActionAsync(string command, bool isQuestion, CancellationToken cancellationToken)
     {
-        // Play acknowledgment sound or TTS
-        // TODO: Could add audio ACK here like "Rozumím"
-        
-        await _dispatcher.DispatchAsync(command, submitPrompt: true, cancellationToken);
+        if (isQuestion)
+        {
+            // Questions: send with PLAN MODE prefix and don't auto-submit
+            // This allows user to review OpenCode's plan before execution
+            Console.WriteLine($"\u001b[96;1m❓ Question detected - sending in PLAN MODE\u001b[0m");
+            var planModeCommand = $"PLAN MODE: {command}";
+            await _dispatcher.DispatchAsync(planModeCommand, submitPrompt: false, cancellationToken);
+        }
+        else
+        {
+            // Commands: send directly and auto-submit for immediate execution
+            await _dispatcher.DispatchAsync(command, submitPrompt: true, cancellationToken);
+        }
     }
 
     private async Task HandleRespondActionAsync(string? response, CancellationToken cancellationToken)

@@ -158,6 +158,62 @@ public class LlmRouterServiceTests
 
     #endregion
 
+    #region IsQuestion Classification Tests (Issue #6)
+
+    [Fact]
+    public void IsQuestion_True_ParsedCorrectly()
+    {
+        var json = @"{
+            ""action"": ""opencode"",
+            ""is_question"": true,
+            ""confidence"": 0.9,
+            ""reason"": ""User asking about code"",
+            ""command_for_opencode"": ""what does this function do""
+        }";
+
+        var result = ParseFullResponseHelper(json);
+
+        Assert.NotNull(result);
+        Assert.Equal(LlmRouterAction.OpenCode, result.Action);
+        Assert.True(result.IsQuestion);
+    }
+
+    [Fact]
+    public void IsQuestion_False_ParsedCorrectly()
+    {
+        var json = @"{
+            ""action"": ""opencode"",
+            ""is_question"": false,
+            ""confidence"": 0.95,
+            ""reason"": ""Programming command"",
+            ""command_for_opencode"": ""create a new file""
+        }";
+
+        var result = ParseFullResponseHelper(json);
+
+        Assert.NotNull(result);
+        Assert.Equal(LlmRouterAction.OpenCode, result.Action);
+        Assert.False(result.IsQuestion);
+    }
+
+    [Fact]
+    public void IsQuestion_Missing_DefaultsToFalse()
+    {
+        // For backwards compatibility, missing is_question should default to false
+        var json = @"{
+            ""action"": ""opencode"",
+            ""confidence"": 0.9,
+            ""reason"": ""Some task""
+        }";
+
+        var result = ParseFullResponseHelper(json);
+
+        Assert.NotNull(result);
+        Assert.False(result.IsQuestion);
+    }
+
+    #endregion
+
     #region Helper Methods
 
     /// <summary>
@@ -195,6 +251,7 @@ public class LlmRouterServiceTests
             return new LlmRouterResult
             {
                 Action = action,
+                IsQuestion = parsed.IsQuestion,
                 Confidence = parsed.Confidence,
                 Reason = parsed.Reason,
                 Response = parsed.Response,
@@ -216,6 +273,10 @@ public class LlmRouterServiceTests
     private class LlmRouterResponseDto
     {
         public string? Action { get; set; }
+        
+        [System.Text.Json.Serialization.JsonPropertyName("is_question")]
+        public bool IsQuestion { get; set; }
+        
         public float Confidence { get; set; }
         public string? Reason { get; set; }
         public string? Response { get; set; }

@@ -52,6 +52,13 @@ public class LlmRouterResult
     public string? BashCommand { get; init; }
     public int ResponseTimeMs { get; init; }
     public string? ErrorMessage { get; init; }
+    
+    /// <summary>
+    /// Indicates whether the input is a question (vs a command).
+    /// Questions are sent to OpenCode with submitPrompt=false and PLAN MODE prefix
+    /// so the user can review before execution.
+    /// </summary>
+    public bool IsQuestion { get; init; }
 
     public static LlmRouterResult Ignored(string reason) => new()
     {

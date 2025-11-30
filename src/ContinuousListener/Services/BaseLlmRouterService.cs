@@ -206,11 +206,16 @@ Analyzuj zachycený text a rozhodni, jak s ním naložit:
 ODPOVĚZ POUZE TÍMTO JSON (žádný další text):
 {{
     ""action"": ""opencode"" | ""respond"" | ""ignore"",
+    ""is_question"": true | false,
     ""confidence"": 0.0-1.0,
     ""reason"": ""krátké zdůvodnění"",
     ""response"": ""odpověď pro TTS (pokud action=respond, jinak null)"",
     ""command_for_opencode"": ""shrnutí příkazu (pouze pokud action=opencode, jinak null)""
-}}";
+}}
+
+POLE is_question:
+- true = otázka/dotaz (""jak"", ""co"", ""proč"", ""kde"", ""který"", ""jaký"", požadavek na vysvětlení)
+- false = příkaz/instrukce (""vytvoř"", ""oprav"", ""spusť"", ""commitni"", ""otevři"", imperativ)";
     }
 
     private LlmRouterResult ParseLlmResponse(string content, int responseTimeMs)
@@ -248,6 +253,7 @@ ODPOVĚZ POUZE TÍMTO JSON (žádný další text):
             return new LlmRouterResult
             {
                 Action = action,
+                IsQuestion = parsed.IsQuestion,
                 Confidence = parsed.Confidence,
                 Reason = parsed.Reason,
                 Response = parsed.Response,
@@ -328,6 +334,9 @@ ODPOVĚZ POUZE TÍMTO JSON (žádný další text):
     {
         [JsonPropertyName("action")]
         public string? Action { get; set; }
+
+        [JsonPropertyName("is_question")]
+        public bool IsQuestion { get; set; }
 
         [JsonPropertyName("confidence")]
         public float Confidence { get; set; }
