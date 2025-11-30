@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Moq;
 using Olbrasoft.VoiceAssistant.Shared.TextInput;
+using Xunit;
 
 namespace Olbrasoft.VoiceAssistant.Shared.Tests.TextInput;
 

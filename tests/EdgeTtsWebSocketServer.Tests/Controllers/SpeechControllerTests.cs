@@ -2,22 +2,36 @@ using EdgeTtsWebSocketServer.Controllers;
 using EdgeTtsWebSocketServer.Models;
 using EdgeTtsWebSocketServer.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Moq;
+using Olbrasoft.Mediation;
+using Xunit;
 
 namespace Olbrasoft.VoiceAssistant.EdgeTtsWebSocketServer.Tests.Controllers;
 
 public class SpeechControllerTests
 {
     private readonly Mock<EdgeTtsService> _mockEdgeTtsService;
+    private readonly Mock<IMediator> _mockMediator;
     private readonly Mock<ILogger<SpeechController>> _mockLogger;
     private readonly SpeechController _controller;
 
     public SpeechControllerTests()
     {
-        // EdgeTtsService requires IConfiguration and ILogger, so we need to mock those too
-        var mockConfiguration = new Mock<Microsoft.Extensions.Configuration.IConfiguration>();
+        // EdgeTtsService requires multiple dependencies
+        var mockConfiguration = new Mock<IConfiguration>();
         var mockEdgeTtsLogger = new Mock<ILogger<EdgeTtsService>>();
+        var mockServiceProvider = new Mock<IServiceProvider>();
+        var httpClient = new HttpClient();
+        
+        // Create real AssistantSpeechStateService with mocked dependencies
+        var mockSpeechStateLogger = new Mock<ILogger<AssistantSpeechStateService>>();
+        var mockScopeFactory = new Mock<IServiceScopeFactory>();
+        var assistantSpeechState = new AssistantSpeechStateService(
+            mockSpeechStateLogger.Object,
+            mockScopeFactory.Object);
         
         // Setup configuration defaults
         mockConfiguration.Setup(c => c["EdgeTts:CacheDirectory"]).Returns("/tmp/test-cache");
@@ -25,10 +39,17 @@ public class SpeechControllerTests
         mockConfiguration.Setup(c => c["EdgeTts:SpeechLockFile"]).Returns("/tmp/test-speech.lock");
         mockConfiguration.Setup(c => c["EdgeTts:DefaultVoice"]).Returns("cs-CZ-AntoninNeural");
         mockConfiguration.Setup(c => c["EdgeTts:DefaultRate"]).Returns("+20%");
+        mockConfiguration.Setup(c => c["EdgeTts:ListenerApiUrl"]).Returns("http://localhost:5051");
 
-        _mockEdgeTtsService = new Mock<EdgeTtsService>(mockConfiguration.Object, mockEdgeTtsLogger.Object);
+        _mockEdgeTtsService = new Mock<EdgeTtsService>(
+            mockConfiguration.Object, 
+            mockEdgeTtsLogger.Object,
+            mockServiceProvider.Object,
+            assistantSpeechState,
+            httpClient);
+        _mockMediator = new Mock<IMediator>();
         _mockLogger = new Mock<ILogger<SpeechController>>();
-        _controller = new SpeechController(_mockEdgeTtsService.Object, _mockLogger.Object);
+        _controller = new SpeechController(_mockEdgeTtsService.Object, _mockMediator.Object, _mockLogger.Object);
     }
 
     [Fact]

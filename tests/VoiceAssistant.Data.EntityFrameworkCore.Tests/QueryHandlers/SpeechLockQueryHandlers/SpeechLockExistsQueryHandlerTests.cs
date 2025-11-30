@@ -4,6 +4,7 @@ using VoiceAssistant.Data.EntityFrameworkCore;
 using VoiceAssistant.Data.EntityFrameworkCore.QueryHandlers.SpeechLockQueryHandlers;
 using VoiceAssistant.Shared.Data.Entities;
 using VoiceAssistant.Shared.Data.Queries.SpeechLockQueries;
+using Xunit;
 
 namespace VoiceAssistant.Data.EntityFrameworkCore.Tests.QueryHandlers.SpeechLockQueryHandlers;
 

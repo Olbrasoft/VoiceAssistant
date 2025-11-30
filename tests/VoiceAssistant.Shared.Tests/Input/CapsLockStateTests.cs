@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Olbrasoft.VoiceAssistant.Shared.Input;
+using Xunit;
 
 namespace Olbrasoft.VoiceAssistant.Shared.Tests.Input;
 

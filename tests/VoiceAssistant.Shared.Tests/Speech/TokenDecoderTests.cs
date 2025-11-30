@@ -1,4 +1,5 @@
 using Olbrasoft.VoiceAssistant.Shared.Speech;
+using Xunit;
 
 namespace Olbrasoft.VoiceAssistant.Shared.Tests.Speech;
 

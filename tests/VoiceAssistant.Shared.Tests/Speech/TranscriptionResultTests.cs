@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Olbrasoft.VoiceAssistant.Shared.Speech;
+using Xunit;
 
 namespace VoiceAssistant.Shared.Tests.Speech;
 

@@ -1,34 +1,77 @@
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Moq;
+using Olbrasoft.Mediation;
 using Olbrasoft.VoiceAssistant.PushToTalkDictation;
+using Olbrasoft.VoiceAssistant.PushToTalkDictation.Service.Services;
 using Olbrasoft.VoiceAssistant.Shared.Speech;
 using Olbrasoft.VoiceAssistant.Shared.TextInput;
+using Xunit;
 
 namespace Olbrasoft.VoiceAssistant.PushToTalkDictation.Service.Tests;
 
 public class DictationWorkerTests
 {
     private readonly Mock<ILogger<DictationWorker>> _mockLogger;
-    private readonly Mock<IConfiguration> _mockConfiguration;
+    private readonly IConfiguration _configuration;
     private readonly Mock<IKeyboardMonitor> _mockKeyboardMonitor;
     private readonly Mock<IAudioRecorder> _mockAudioRecorder;
     private readonly Mock<ISpeechTranscriber> _mockSpeechTranscriber;
     private readonly Mock<ITextTyper> _mockTextTyper;
+    private readonly Mock<IPttNotifier> _mockPttNotifier;
+    private readonly Mock<IMediator> _mockMediator;
+    private readonly HttpClient _httpClient;
 
     public DictationWorkerTests()
     {
         _mockLogger = new Mock<ILogger<DictationWorker>>();
-        _mockConfiguration = new Mock<IConfiguration>();
+        
+        // Use real ConfigurationBuilder for proper GetValue support
+        _configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["PushToTalkDictation:TriggerKey"] = "CapsLock",
+                ["EdgeTts:BaseUrl"] = "http://localhost:5555"
+            })
+            .Build();
+            
         _mockKeyboardMonitor = new Mock<IKeyboardMonitor>();
         _mockAudioRecorder = new Mock<IAudioRecorder>();
         _mockSpeechTranscriber = new Mock<ISpeechTranscriber>();
         _mockTextTyper = new Mock<ITextTyper>();
+        _mockPttNotifier = new Mock<IPttNotifier>();
+        _mockMediator = new Mock<IMediator>();
+        _httpClient = new HttpClient();
+    }
 
-        // Default configuration
-        var mockSection = new Mock<IConfigurationSection>();
-        mockSection.Setup(s => s.Value).Returns("CapsLock");
-        _mockConfiguration.Setup(c => c.GetSection("PushToTalkDictation:TriggerKey")).Returns(mockSection.Object);
+    private DictationWorker CreateWorker() => new DictationWorker(
+        _mockLogger.Object,
+        _configuration,
+        _mockKeyboardMonitor.Object,
+        _mockAudioRecorder.Object,
+        _mockSpeechTranscriber.Object,
+        _mockTextTyper.Object,
+        _mockPttNotifier.Object,
+        _mockMediator.Object,
+        _httpClient);
+
+    private DictationWorker CreateWorkerWithConfig(Dictionary<string, string?> configValues)
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(configValues)
+            .Build();
+            
+        return new DictationWorker(
+            _mockLogger.Object,
+            config,
+            _mockKeyboardMonitor.Object,
+            _mockAudioRecorder.Object,
+            _mockSpeechTranscriber.Object,
+            _mockTextTyper.Object,
+            _mockPttNotifier.Object,
+            _mockMediator.Object,
+            _httpClient);
     }
 
     [Fact]
@@ -37,11 +80,14 @@ public class DictationWorkerTests
         // Act & Assert
         Assert.Throws<ArgumentNullException>(() => new DictationWorker(
             null!,
-            _mockConfiguration.Object,
+            _configuration,
             _mockKeyboardMonitor.Object,
             _mockAudioRecorder.Object,
             _mockSpeechTranscriber.Object,
-            _mockTextTyper.Object));
+            _mockTextTyper.Object,
+            _mockPttNotifier.Object,
+            _mockMediator.Object,
+            _httpClient));
     }
 
     [Fact]
@@ -54,7 +100,10 @@ public class DictationWorkerTests
             _mockKeyboardMonitor.Object,
             _mockAudioRecorder.Object,
             _mockSpeechTranscriber.Object,
-            _mockTextTyper.Object));
+            _mockTextTyper.Object,
+            _mockPttNotifier.Object,
+            _mockMediator.Object,
+            _httpClient));
     }
 
     [Fact]
@@ -63,11 +112,14 @@ public class DictationWorkerTests
         // Act & Assert
         Assert.Throws<ArgumentNullException>(() => new DictationWorker(
             _mockLogger.Object,
-            _mockConfiguration.Object,
+            _configuration,
             null!,
             _mockAudioRecorder.Object,
             _mockSpeechTranscriber.Object,
-            _mockTextTyper.Object));
+            _mockTextTyper.Object,
+            _mockPttNotifier.Object,
+            _mockMediator.Object,
+            _httpClient));
     }
 
     [Fact]
@@ -76,11 +128,14 @@ public class DictationWorkerTests
         // Act & Assert
         Assert.Throws<ArgumentNullException>(() => new DictationWorker(
             _mockLogger.Object,
-            _mockConfiguration.Object,
+            _configuration,
             _mockKeyboardMonitor.Object,
             null!,
             _mockSpeechTranscriber.Object,
-            _mockTextTyper.Object));
+            _mockTextTyper.Object,
+            _mockPttNotifier.Object,
+            _mockMediator.Object,
+            _httpClient));
     }
 
     [Fact]
@@ -89,11 +144,14 @@ public class DictationWorkerTests
         // Act & Assert
         Assert.Throws<ArgumentNullException>(() => new DictationWorker(
             _mockLogger.Object,
-            _mockConfiguration.Object,
+            _configuration,
             _mockKeyboardMonitor.Object,
             _mockAudioRecorder.Object,
             null!,
-            _mockTextTyper.Object));
+            _mockTextTyper.Object,
+            _mockPttNotifier.Object,
+            _mockMediator.Object,
+            _httpClient));
     }
 
     [Fact]
@@ -102,10 +160,61 @@ public class DictationWorkerTests
         // Act & Assert
         Assert.Throws<ArgumentNullException>(() => new DictationWorker(
             _mockLogger.Object,
-            _mockConfiguration.Object,
+            _configuration,
             _mockKeyboardMonitor.Object,
             _mockAudioRecorder.Object,
             _mockSpeechTranscriber.Object,
+            null!,
+            _mockPttNotifier.Object,
+            _mockMediator.Object,
+            _httpClient));
+    }
+
+    [Fact]
+    public void Constructor_WithNullPttNotifier_ShouldThrowArgumentNullException()
+    {
+        // Act & Assert
+        Assert.Throws<ArgumentNullException>(() => new DictationWorker(
+            _mockLogger.Object,
+            _configuration,
+            _mockKeyboardMonitor.Object,
+            _mockAudioRecorder.Object,
+            _mockSpeechTranscriber.Object,
+            _mockTextTyper.Object,
+            null!,
+            _mockMediator.Object,
+            _httpClient));
+    }
+
+    [Fact]
+    public void Constructor_WithNullMediator_ShouldThrowArgumentNullException()
+    {
+        // Act & Assert
+        Assert.Throws<ArgumentNullException>(() => new DictationWorker(
+            _mockLogger.Object,
+            _configuration,
+            _mockKeyboardMonitor.Object,
+            _mockAudioRecorder.Object,
+            _mockSpeechTranscriber.Object,
+            _mockTextTyper.Object,
+            _mockPttNotifier.Object,
+            null!,
+            _httpClient));
+    }
+
+    [Fact]
+    public void Constructor_WithNullHttpClient_ShouldThrowArgumentNullException()
+    {
+        // Act & Assert
+        Assert.Throws<ArgumentNullException>(() => new DictationWorker(
+            _mockLogger.Object,
+            _configuration,
+            _mockKeyboardMonitor.Object,
+            _mockAudioRecorder.Object,
+            _mockSpeechTranscriber.Object,
+            _mockTextTyper.Object,
+            _mockPttNotifier.Object,
+            _mockMediator.Object,
             null!));
     }
 
@@ -113,13 +222,7 @@ public class DictationWorkerTests
     public void Constructor_WithValidDependencies_ShouldCreateInstance()
     {
         // Act
-        var worker = new DictationWorker(
-            _mockLogger.Object,
-            _mockConfiguration.Object,
-            _mockKeyboardMonitor.Object,
-            _mockAudioRecorder.Object,
-            _mockSpeechTranscriber.Object,
-            _mockTextTyper.Object);
+        var worker = CreateWorker();
 
         // Assert
         Assert.NotNull(worker);
@@ -129,18 +232,14 @@ public class DictationWorkerTests
     public void Constructor_ShouldReadTriggerKeyFromConfiguration()
     {
         // Arrange
-        var mockSection = new Mock<IConfigurationSection>();
-        mockSection.Setup(s => s.Value).Returns("ScrollLock");
-        _mockConfiguration.Setup(c => c.GetSection("PushToTalkDictation:TriggerKey")).Returns(mockSection.Object);
+        var config = new Dictionary<string, string?>
+        {
+            ["PushToTalkDictation:TriggerKey"] = "ScrollLock",
+            ["EdgeTts:BaseUrl"] = "http://localhost:5555"
+        };
 
         // Act - should not throw even with different trigger key
-        var worker = new DictationWorker(
-            _mockLogger.Object,
-            _mockConfiguration.Object,
-            _mockKeyboardMonitor.Object,
-            _mockAudioRecorder.Object,
-            _mockSpeechTranscriber.Object,
-            _mockTextTyper.Object);
+        var worker = CreateWorkerWithConfig(config);
 
         // Assert
         Assert.NotNull(worker);
@@ -150,13 +249,7 @@ public class DictationWorkerTests
     public async Task StopAsync_WhenNotRecording_ShouldStopMonitoring()
     {
         // Arrange
-        var worker = new DictationWorker(
-            _mockLogger.Object,
-            _mockConfiguration.Object,
-            _mockKeyboardMonitor.Object,
-            _mockAudioRecorder.Object,
-            _mockSpeechTranscriber.Object,
-            _mockTextTyper.Object);
+        var worker = CreateWorker();
 
         _mockKeyboardMonitor.Setup(m => m.StopMonitoringAsync())
             .Returns(Task.CompletedTask);
@@ -172,13 +265,7 @@ public class DictationWorkerTests
     public void Worker_ShouldBeBackgroundService()
     {
         // Arrange & Act
-        var worker = new DictationWorker(
-            _mockLogger.Object,
-            _mockConfiguration.Object,
-            _mockKeyboardMonitor.Object,
-            _mockAudioRecorder.Object,
-            _mockSpeechTranscriber.Object,
-            _mockTextTyper.Object);
+        var worker = CreateWorker();
 
         // Assert
         Assert.IsAssignableFrom<BackgroundService>(worker);

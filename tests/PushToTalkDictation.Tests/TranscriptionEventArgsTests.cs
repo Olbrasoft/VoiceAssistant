@@ -1,3 +1,5 @@
+using Xunit;
+
 namespace Olbrasoft.VoiceAssistant.PushToTalkDictation.Tests;
 
 public class TranscriptionEventArgsTests

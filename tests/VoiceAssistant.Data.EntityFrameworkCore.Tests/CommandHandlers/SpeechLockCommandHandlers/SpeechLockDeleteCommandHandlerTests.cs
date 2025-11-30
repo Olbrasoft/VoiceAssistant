@@ -4,6 +4,7 @@ using VoiceAssistant.Data.EntityFrameworkCore;
 using VoiceAssistant.Data.EntityFrameworkCore.CommandHandlers.SpeechLockCommandHandlers;
 using VoiceAssistant.Shared.Data.Commands.SpeechLockCommands;
 using VoiceAssistant.Shared.Data.Entities;
+using Xunit;
 
 namespace VoiceAssistant.Data.EntityFrameworkCore.Tests.CommandHandlers.SpeechLockCommandHandlers;
 

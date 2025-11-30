@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using Moq;
+using Xunit;
 
 namespace Olbrasoft.VoiceAssistant.PushToTalkDictation.Tests;
 
