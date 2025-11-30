@@ -1,6 +1,6 @@
 # VoiceAssistant - Agent Instructions
 
-**Poslední aktualizace:** 2025-11-28  
+**Poslední aktualizace:** 2025-11-29  
 **Stav:** ✅ Plně funkční
 
 Tento soubor obsahuje všechny informace potřebné pro práci na projektu bez nutnosti procházet kód.
@@ -11,10 +11,11 @@ Tento soubor obsahuje všechny informace potřebné pro práci na projektu bez n
 
 VoiceAssistant je platforma pro hlasové ovládání na Linuxu s těmito komponentami:
 
-1. **Push-to-Talk Dictation** - Drž CapsLock, mluv, pusť → text se napíše do aktivní aplikace
-2. **Wake Word Detection** - Offline detekce "Hey Jarvis" a dalších wake words
-3. **Text-to-Speech** - Microsoft Edge TTS přes WebSocket
-4. **Orchestration** - Koordinace wake word → odpověď
+| Komponenta | Popis | Port |
+|------------|-------|------|
+| **ContinuousListener** | Neustálé poslouchání s VAD + Whisper + Groq router | 5051 |
+| **Push-to-Talk Dictation** | Drž CapsLock → nahrávej → přepis → vlož text | 5050 |
+| **Edge TTS Server** | Microsoft Edge Text-to-Speech přes WebSocket | 5555 |
 
 ---
 
@@ -26,106 +27,181 @@ VoiceAssistant je platforma pro hlasové ovládání na Linuxu s těmito kompone
 │   ├── VoiceAssistant.Shared/        # Sdílená knihovna
 │   │   ├── Speech/                   # OnnxWhisperTranscriber, AudioPreprocessor, TokenDecoder
 │   │   ├── TextInput/                # DotoolTextTyper (Wayland text input)
+│   │   ├── Data/                     # Entity, Commands, Queries, Enums
 │   │   └── Input/                    # CapsLockStateDetector
-│   ├── PushToTalkDictation/          # Core knihovna (EvdevKeyboardMonitor, PwRecordAudioCapture)
+│   │
+│   ├── VoiceAssistant.Data.EntityFrameworkCore/  # EF Core + SQLite
+│   │   ├── VoiceAssistantDbContext.cs
+│   │   ├── CommandHandlers/          # CQRS command handlery
+│   │   ├── QueryHandlers/            # CQRS query handlery
+│   │   └── Migrations/               # EF migrace
+│   │
+│   ├── ContinuousListener/           # Neustálé poslouchání + Groq router
+│   │   ├── ContinuousListenerWorker.cs
+│   │   ├── Services/
+│   │   │   ├── AudioCaptureService.cs      # pw-record audio capture
+│   │   │   ├── VadService.cs               # Silero VAD (ONNX)
+│   │   │   ├── TranscriptionService.cs     # Whisper přepis
+│   │   │   ├── GroqRouterService.cs        # LLM router (OpenCode/Respond/Bash/Ignore)
+│   │   │   ├── CommandDispatcher.cs        # Dispatch do OpenCode
+│   │   │   ├── TtsPlaybackService.cs       # Přehrávání TTS
+│   │   │   ├── BashExecutionService.cs     # Spouštění bash příkazů
+│   │   │   └── SpeechLockService.cs        # Zamykání TTS
+│   │   └── appsettings.json
+│   │
+│   ├── PushToTalkDictation/          # Core knihovna
+│   │   ├── EvdevKeyboardMonitor.cs   # Čtení klávesnice (evdev)
+│   │   ├── AlsaAudioRecorder.cs      # ALSA nahrávání
+│   │   └── PwRecordAudioCapture.cs   # PipeWire nahrávání
+│   │
 │   ├── PushToTalkDictation.Service/  # Worker Service + SignalR hub
 │   │   ├── DictationWorker.cs        # Hlavní worker
-│   │   ├── PttHub.cs                 # SignalR hub na :5050/hubs/ptt
-│   │   ├── PttNotifier.cs            # Broadcaster eventů
+│   │   ├── Hubs/PttHub.cs            # SignalR hub na :5050/hubs/ptt
 │   │   ├── transcription-indicator.py # Python systray indikátor
-│   │   └── deploy-push-to-talk-dictation.sh
-│   ├── WakeWordDetection/            # ONNX wake word detekce
-│   ├── WakeWordDetection.Service/    # ASP.NET API + SignalR
-│   ├── EdgeTtsWebSocketServer/       # TTS server
-│   └── Orchestration/                # Koordinátor
-├── tests/                            # 270 unit testů
+│   │   └── assets/                   # SVG ikony pro animaci
+│   │
+│   └── EdgeTtsWebSocketServer/       # TTS server
+│       ├── Controllers/SpeechController.cs
+│       └── Services/EdgeTtsService.cs
+│
+├── tests/                            # Unit testy
+│   ├── VoiceAssistant.Shared.Tests/
+│   ├── VoiceAssistant.Data.EntityFrameworkCore.Tests/
+│   ├── PushToTalkDictation.Tests/
+│   ├── PushToTalkDictation.Service.Tests/
+│   └── EdgeTtsWebSocketServer.Tests/
+│
 └── VoiceAssistant.sln
 ```
 
-**Deployment adresáře:**
+**Nasazená verze:** `~/voice-assistant/` (viz `~/voice-assistant/AGENTS.md`)
+
+---
+
+## 🎤 ContinuousListener - Hlavní komponenta
+
+### Workflow
+
 ```
-~/voice-assistant/
-├── push-to-talk-dictation/           # PTT služba
-│   ├── PushToTalkDictation.Service.dll
-│   ├── appsettings.json
-│   ├── transcription-indicator.py
-│   ├── venv/                         # Python virtualenv
-│   ├── assets/                       # SVG ikony pro animaci
-│   └── models/
-│       └── sherpa-onnx-whisper-small/
-├── wake-word-detection/              # Wake word služba
-└── voice-output/                     # TTS skripty
+┌─────────────────┐     ┌─────────────┐     ┌──────────────────┐
+│ AudioCapture    │────▶│ VAD (Silero)│────▶│ Whisper          │
+│ (pw-record)     │     │ ONNX Model  │     │ Transkripce      │
+└─────────────────┘     └─────────────┘     └────────┬─────────┘
+                                                      │
+                                                      ▼
+┌─────────────────┐     ┌─────────────┐     ┌──────────────────┐
+│ TTS / Bash      │◀────│ Groq Router │◀────│ Text             │
+│ / OpenCode      │     │ (LLM)       │     │                  │
+└─────────────────┘     └─────────────┘     └──────────────────┘
+```
+
+### Groq Router Actions
+
+| Action | Kdy se použije | Příklad |
+|--------|----------------|---------|
+| `OPENCODE` | Programovací příkazy, práce s kódem | "Počítači, oprav chybu v testech" |
+| `RESPOND` | Jednoduché dotazy (čas, datum, výpočty) | "Kolik je hodin?" |
+| `BASH` | Systémové příkazy, otevírání aplikací | "Otevři VS Code" |
+| `IGNORE` | Irelevantní řeč, šum | "...tak jo, uvidíme..." |
+
+### Konfigurace (appsettings.json)
+
+```json
+{
+  "ContinuousListener": {
+    "SampleRate": 16000,
+    "VadChunkMs": 32,
+    "PostSilenceMs": 1500,
+    "MinRecordingMs": 800
+  },
+  "GroqRouter": {
+    "ApiKey": "gsk_...",
+    "Model": "llama-3.3-70b-versatile"
+  },
+  "TtsApiUrl": "http://localhost:5555",
+  "OpenCodeUrl": "http://localhost:4096"
+}
 ```
 
 ---
 
-## 🔌 Běžící služby
+## 🔌 Služby a porty
 
 | Služba | Port | Endpoint | Systemd unit |
 |--------|------|----------|--------------|
-| Push-to-Talk Dictation | 5050 | `http://localhost:5050/hubs/ptt` | `push-to-talk-dictation.service` |
-| Transcription Indicator | - | (systray) | `transcription-indicator.service` |
-| Wake Word Detection | 5000 | `ws://localhost:5000/hubs/wakeword` | `wakeword-listener.service` |
-| Edge TTS Server | 5555 | `http://localhost:5555/speak` | `edge-tts-server.service` |
+| ContinuousListener | 5051 | `http://localhost:5051/health` | `continuous-listener.service` |
+| Push-to-Talk Dictation | 5050 | `ws://localhost:5050/hubs/ptt` | `push-to-talk-dictation.service` |
+| Edge TTS Server | 5555 | `http://localhost:5555/api/speech/speak` | `edge-tts-server.service` |
 
 **Kontrola služeb:**
 ```bash
-systemctl --user status push-to-talk-dictation
-systemctl --user status transcription-indicator
-journalctl --user -u push-to-talk-dictation -f
+systemctl --user status continuous-listener
+systemctl --user status edge-tts-server
+journalctl --user -u continuous-listener -f
 ```
-
----
-
-## 📡 SignalR API (PushToTalkDictation)
-
-**Hub:** `http://localhost:5050/hubs/ptt`
-
-### PttEvent Types
-
-| EventType | Hodnota | Popis |
-|-----------|---------|-------|
-| RecordingStarted | 0 | Nahrávání začalo (CapsLock stisknuto) |
-| RecordingStopped | 1 | Nahrávání skončilo (obsahuje `durationSeconds`) |
-| TranscriptionStarted | 2 | Přepis začal |
-| TranscriptionCompleted | 3 | Přepis dokončen (obsahuje `text`, `confidence`) |
-| TranscriptionFailed | 4 | Přepis selhal (obsahuje `errorMessage`) |
-
-### Transcription Indicator
-
-Python skript `transcription-indicator.py`:
-- Připojuje se k SignalR přes raw WebSocket (ne signalrcore - ta nefungovala)
-- Na `RecordingStopped` zobrazí animovanou ikonu v systray
-- Na `TranscriptionCompleted/Failed` ikonu skryje
-- Animace: 5 framů (`document-white-frame1-5.svg`), 200ms interval
 
 ---
 
 ## 🛠️ Vývoj a deployment
 
 ### Build & Test
+
 ```bash
 cd ~/Olbrasoft/VoiceAssistant
-dotnet build
-dotnet test                    # 270 testů (1 přeskočen - macOS specific)
+~/.dotnet/dotnet build
+~/.dotnet/dotnet test
+```
+
+### Deploy ContinuousListener
+
+```bash
+cd ~/Olbrasoft/VoiceAssistant
+~/.dotnet/dotnet publish src/ContinuousListener -c Release \
+  -o ~/voice-assistant/continuous-listener
+systemctl --user restart continuous-listener
+```
+
+### Deploy Edge TTS Server
+
+```bash
+~/.dotnet/dotnet publish src/EdgeTtsWebSocketServer -c Release \
+  -o ~/voice-assistant/edge-tts-websocket-server
+systemctl --user restart edge-tts-server
 ```
 
 ### Deploy Push-to-Talk Dictation
+
 ```bash
-./src/PushToTalkDictation.Service/deploy-push-to-talk-dictation.sh
+./deploy-push-to-talk-dictation.sh
+# nebo ručně:
+~/.dotnet/dotnet publish src/PushToTalkDictation.Service -c Release \
+  -o ~/voice-assistant/push-to-talk-dictation-service
+systemctl --user restart push-to-talk-dictation
 ```
 
-Deploy skript:
-1. Zabije všechny běžící instance (prevence duplicit)
-2. Spustí testy
-3. Publikuje do `~/voice-assistant/push-to-talk-dictation/`
-4. Aktualizuje Python venv
-5. Restartuje obě systemd služby
+---
 
-### Ruční restart
+## 🗄️ Databáze (SQLite + EF Core)
+
+**Umístění:** `~/voice-assistant/voice-assistant.db`
+
+### Entity
+
+| Entity | Tabulka | Popis |
+|--------|---------|-------|
+| `TranscriptionLog` | TranscriptionLogs | Historie přepisů řeči |
+| `GroqRouterLog` | GroqRouterLogs | Rozhodnutí Groq routeru |
+| `SpeechLockEntity` | SpeechLocks | Zámky TTS během nahrávání |
+| `AssistantSpeechState` | AssistantSpeechStates | Stav TTS přehrávání |
+| `Setting` | Settings | Konfigurace (klíč-hodnota) |
+| `VoiceProfile` | VoiceProfiles | Hlasové profily |
+
+### EF Core migrace
+
 ```bash
-systemctl --user restart push-to-talk-dictation
-systemctl --user restart transcription-indicator
+cd ~/Olbrasoft/VoiceAssistant/src/VoiceAssistant.Data.EntityFrameworkCore
+~/.dotnet/dotnet ef migrations add NazevMigrace
+~/.dotnet/dotnet ef database update
 ```
 
 ---
@@ -134,10 +210,12 @@ systemctl --user restart transcription-indicator
 
 - **.NET 10** (Preview) - SDK a runtime
 - **ASP.NET Core** - Web API, SignalR
-- **Whisper.net** + **ONNX Runtime CUDA** - GPU-akcelerovaný přepis řeči
-- **evdev** - Čtení klávesnice (CapsLock trigger)
+- **Entity Framework Core** - SQLite ORM
+- **ONNX Runtime CUDA** - GPU-akcelerovaný Whisper přepis
+- **Silero VAD** - Voice Activity Detection (ONNX)
+- **Groq API** - LLM router (llama-3.3-70b)
 - **pw-record** - PipeWire audio capture
-- **dotool** - Wayland text input (simulace Ctrl+V)
+- **dotool** - Wayland text input
 - **GTK 3 + AyatanaAppIndicator3** - Systray ikona (Python)
 
 ---
@@ -153,41 +231,17 @@ systemctl --user restart transcription-indicator
 
 ---
 
-## 🐛 Známé problémy (vyřešené)
-
-### 1. Duplicitní vkládání textu
-**Příčina:** Běžely dvě instance služby  
-**Řešení:** Deploy skript nyní v kroku 0 zabíjí všechny procesy
-
-### 2. signalrcore Python knihovna nefungovala
-**Příčina:** Nepřijímala eventy správně  
-**Řešení:** Přepsáno na raw WebSocket s `websocket-client`
-
-### 3. Test přehrával audio
-**Příčina:** `TriggerDictationAsync` test volal skutečný kód  
-**Řešení:** Test odstraněn
-
----
-
-## 📋 Možná budoucí vylepšení
-
-- [ ] Podpora více jazyků (ne jen čeština)
-- [ ] Konfigurovatelná klávesa (ne jen CapsLock)
-- [ ] GUI pro nastavení
-- [ ] Integrace s OpenCode (HTTP API)
-
----
-
 ## 🔗 Klíčové soubory
 
 | Soubor | Účel |
 |--------|------|
-| `src/PushToTalkDictation.Service/DictationWorker.cs` | Hlavní worker - nahrávání a přepis |
-| `src/PushToTalkDictation.Service/PttHub.cs` | SignalR hub |
-| `src/PushToTalkDictation.Service/transcription-indicator.py` | Systray indikátor |
-| `src/VoiceAssistant.Shared/Speech/OnnxWhisperTranscriber.cs` | Whisper přepis |
+| `src/ContinuousListener/ContinuousListenerWorker.cs` | Hlavní smyčka - VAD → Whisper → Router |
+| `src/ContinuousListener/Services/GroqRouterService.cs` | Groq LLM router |
+| `src/ContinuousListener/Services/CommandDispatcher.cs` | Dispatch příkazů do OpenCode |
+| `src/VoiceAssistant.Shared/Speech/OnnxWhisperTranscriber.cs` | Whisper přepis (ONNX) |
 | `src/VoiceAssistant.Shared/TextInput/DotoolTextTyper.cs` | Text input (dotool) |
-| `src/PushToTalkDictation/EvdevKeyboardMonitor.cs` | Čtení klávesnice |
+| `src/EdgeTtsWebSocketServer/Services/EdgeTtsService.cs` | TTS přes Microsoft Edge |
+| `src/PushToTalkDictation.Service/DictationWorker.cs` | PTT worker |
 
 ---
 
@@ -196,16 +250,18 @@ systemctl --user restart transcription-indicator
 **Repozitář:** https://github.com/Olbrasoft/VoiceAssistant
 
 **Větve:**
-- `main` - produkční větev (vše je zde)
+- `main` - produkční větev
 
 ---
 
-## 🎤 Voice Assistant skripty
+## 📋 Možná budoucí vylepšení
 
-TTS skripty v `~/voice-assistant/voice-output/`:
-- `tts-api.sh` - HTTP API wrapper pro EdgeTTS WebSocket Server
-- `tts-simple.sh` - Přímý edge-tts bash skript (fallback)
+- [ ] Podpora více jazyků (ne jen čeština)
+- [ ] Konfigurovatelná klávesa pro PTT (ne jen CapsLock)
+- [ ] GUI pro nastavení
+- [ ] Wake word detekce offline (místo Groq routeru)
+- [ ] Konverzační paměť (multi-turn)
 
 ---
 
-*Tento soubor je určen pro AI agenty pracující na projektu. Obsahuje vše potřebné pro pokračování v práci bez nutnosti procházet kód.*
+*Tento soubor je určen pro AI agenty pracující na projektu. Pro nasazenou verzi viz `~/voice-assistant/AGENTS.md`.*

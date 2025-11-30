@@ -153,13 +153,18 @@ CREATE TABLE TranscriptionLogs (
 
 ## Models
 
-### Whisper Models
+### Whisper ASR Models
 
-Located in `~/voice-assistant/push-to-talk-dictation/models/`
+Located in `~/voice-assistant/automatic-speech-recognition-models/`
 
 | Model | Speed | Quality | GPU Memory |
 |-------|-------|---------|------------|
-| ggml-large-v3.bin | ~2s/chunk | Best | ~3GB |
+| ggml-base.bin | Fastest | Basic | ~1GB |
+| ggml-small.bin | ~1s/chunk | Good | ~1.5GB |
+| ggml-medium.bin | ~3s/chunk | Better | ~2GB |
+| ggml-large-v3.bin | ~5s/chunk | Best | ~3GB |
+
+**Usage:** ContinuousListener uses `ggml-medium.bin`, PTT Dictation uses `ggml-large-v3.bin`.
 
 ## Testing
 
