@@ -20,7 +20,7 @@ public class ContinuousListenerWorker : BackgroundService
     private readonly SpeechLockService _speechLock;
     private readonly AssistantSpeechStateService _assistantSpeechState;
     private readonly AssistantSpeechTrackerService _speechTracker;
-    private readonly BashExecutionService _bashExecution;
+    // BashExecutionService removed - all commands now go through OpenCode
     private readonly ContinuousListenerOptions _options;
 
     // State machine - simplified without wake words
@@ -56,8 +56,7 @@ public class ContinuousListenerWorker : BackgroundService
         TtsControlService ttsControl,
         SpeechLockService speechLock,
         AssistantSpeechStateService assistantSpeechState,
-        AssistantSpeechTrackerService speechTracker,
-        BashExecutionService bashExecution)
+        AssistantSpeechTrackerService speechTracker)
     {
         _logger = logger;
         _audioCapture = audioCapture;
@@ -70,7 +69,6 @@ public class ContinuousListenerWorker : BackgroundService
         _speechLock = speechLock;
         _assistantSpeechState = assistantSpeechState;
         _speechTracker = speechTracker;
-        _bashExecution = bashExecution;
 
         _options = new ContinuousListenerOptions();
         configuration.GetSection(ContinuousListenerOptions.SectionName).Bind(_options);
@@ -321,7 +319,10 @@ public class ContinuousListenerWorker : BackgroundService
                     break;
 
                 case LlmRouterAction.Bash:
-                    await HandleBashActionAsync(routerResult.BashCommand, routerResult.Response, cancellationToken);
+                    // Bash actions are now redirected to OpenCode
+                    // OpenCode has full context and can execute commands properly
+                    Console.WriteLine($"\u001b[93;1m⚠️ Bash action redirected to OpenCode\u001b[0m");
+                    await HandleOpenCodeActionAsync(text, cancellationToken);
                     break;
 
                 case LlmRouterAction.Ignore:
@@ -365,35 +366,9 @@ public class ContinuousListenerWorker : BackgroundService
         await _ttsPlayback.SpeakAsync(response, cancellationToken);
     }
 
-    private async Task HandleBashActionAsync(string? bashCommand, string? response, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(bashCommand))
-        {
-            _logger.LogWarning("LLM returned BASH but no bash_command");
-            return;
-        }
-
-        // Yellow for bash commands
-        Console.WriteLine($"\u001b[93;1m💻 $ {bashCommand}\u001b[0m");
-
-        // Execute the bash command in background
-        var success = await _bashExecution.ExecuteAsync(bashCommand);
-
-        if (!success)
-        {
-            _logger.LogWarning("Bash command failed: {Command}", bashCommand);
-        }
-
-        // Release speech lock before TTS
-        await _speechLock.UnlockAsync(cancellationToken);
-
-        // Speak the response if provided
-        if (!string.IsNullOrWhiteSpace(response))
-        {
-            Console.WriteLine($"\u001b[92;1m🔊 \"{response}\"\u001b[0m");
-            await _ttsPlayback.SpeakAsync(response, cancellationToken);
-        }
-    }
+    // HandleBashActionAsync removed - all bash commands now go through OpenCode
+    // OpenCode has full context (current directory, project state, etc.) 
+    // and can execute commands properly
 
     private async Task ResetToWaitingAsync(CancellationToken cancellationToken)
     {
