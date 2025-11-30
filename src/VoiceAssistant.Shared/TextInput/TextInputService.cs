@@ -20,7 +20,7 @@ public class TextInputService
     {
         _logger = logger;
         _configuration = configuration;
-        _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
     }
 
     /// <summary>
@@ -113,8 +113,9 @@ public class TextInputService
         catch (Exception ex)
         {
             _logger.LogError(ex, "❌ Failed to send message via Session API: {Message}", ex.Message);
-            // Fallback to TUI API
-            return await TypeTextAsync(text, submitPrompt: true, cancellationToken);
+            // Fallback to TUI API - use new cancellation token since original might be cancelled
+            _logger.LogInformation("⚠️ Falling back to TUI API...");
+            return await TypeTextAsync(text, submitPrompt: true, CancellationToken.None);
         }
     }
 
